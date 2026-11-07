@@ -69,7 +69,8 @@ rules:
     tools: ["fs.write", "fs.delete"]
     when:
       any:
-        - {field: path, op: startswith, value: "/etc"}
-        - {field: path, op: startswith, value: "/var/secrets"}
+        # `within` checks the REAL path, so "../" tricks and symlinks
+        # cannot slip past it the way they slip past `startswith`.
+        - {field: path, op: within, value: ["/etc", "/var/secrets"]}
         - {field: path, op: regex, value: "\\.env$"}
     reason: "sensitive filesystem locations are off-limits"
