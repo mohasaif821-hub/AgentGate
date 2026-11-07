@@ -159,7 +159,7 @@ def test_budget_is_per_session():
 
 # ---- first-match-wins ordering --------------------------------------------
 
-def test_first_match_wins():
+def test_deny_overrides_allow_regardless_of_order():
     eng = make_engine({
         "default_effect": "deny",
         "rules": [
@@ -168,7 +168,31 @@ def test_first_match_wins():
         ],
     })
     d = eng.evaluate("x", {}, support_agent(), "s")
-    assert d.effect is Effect.ALLOW and d.rule_id == "first"
+    assert d.effect is Effect.DENY and d.rule_id == "second"
+
+
+def test_most_restrictive_effect_wins():
+    eng = make_engine({
+        "default_effect": "deny",
+        "rules": [
+            {"id": "a", "effect": "allow", "tools": ["x"]},
+            {"id": "r", "effect": "redact", "tools": ["x"], "redact_fields": ["k"]},
+            {"id": "h", "effect": "require_approval", "tools": ["x"]},
+        ],
+    })
+    d = eng.evaluate("x", {}, support_agent(), "s")
+    assert d.effect is Effect.REQUIRE_APPROVAL and d.rule_id == "h"
+
+
+def test_ties_follow_file_order():
+    eng = make_engine({
+        "default_effect": "deny",
+        "rules": [
+            {"id": "d1", "effect": "deny", "tools": ["x"]},
+            {"id": "d2", "effect": "deny", "tools": ["x"]},
+        ],
+    })
+    assert eng.evaluate("x", {}, support_agent(), "s").rule_id == "d1"
 
 
 # ---- redaction -------------------------------------------------------------
@@ -439,6 +463,9 @@ def test_example_policy_scenarios():
     assert eng.evaluate("billing.refund", {"amount": 5000}, ident, "s").effect is Effect.REQUIRE_APPROVAL
     # sensitive fs write denied
     assert eng.evaluate("fs.write", {"path": "/etc/x"}, ident, "s").effect is Effect.DENY
+    # deny beats the threat-scan approval rule that also matches this call
+    d = eng.evaluate("fs.delete", {"path": "/etc/passwd"}, ident, "s")
+    assert d.effect is Effect.DENY and d.rule_id == "deny-sensitive-fs"
     # read tool allowed for anyone
     nobody = AgentIdentity("anon", frozenset(), 0.0, {})
     assert eng.evaluate("db.read", {}, nobody, "s").effect is Effect.ALLOW
