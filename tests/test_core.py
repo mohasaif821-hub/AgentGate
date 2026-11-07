@@ -549,6 +549,90 @@ def test_report_generation_from_audit():
         assert "chain intact" in md
 
 
+# ---- AgentGate: real-path checks (within / not_within) --------------------
+
+def _path_fixture():
+    """A temp workspace with a file inside, a secret outside, and (where the OS
+    allows) a symlink inside the workspace that points at the secret."""
+    root = tempfile.mkdtemp()
+    ws = os.path.join(root, "workspace")
+    os.makedirs(ws)
+    with open(os.path.join(ws, "notes.txt"), "w") as f:
+        f.write("ok")
+    secret = os.path.join(root, "secret.txt")
+    with open(secret, "w") as f:
+        f.write("s")
+    link = os.path.join(ws, "link.txt")
+    try:
+        os.symlink(secret, link)
+    except (OSError, NotImplementedError):
+        link = None  # e.g. Windows without symlink rights: skip that case
+    return ws, secret, link
+
+
+def _read_engine(ws):
+    return make_engine({
+        "default_effect": "deny",
+        "rules": [{"id": "read-ws", "effect": "allow", "tools": ["read_file"],
+                   "when": {"field": "path", "op": "within", "value": ws}}],
+    })
+
+
+def test_within_allows_file_inside_workspace():
+    ws, _, _ = _path_fixture()
+    d = _read_engine(ws).evaluate("read_file", {"path": os.path.join(ws, "notes.txt")},
+                                  support_agent(), "s")
+    assert d.effect is Effect.ALLOW
+
+
+def test_within_blocks_dotdot_traversal():
+    ws, _, _ = _path_fixture()
+    sneaky = os.path.join(ws, "..", "secret.txt")  # text starts with the workspace path
+    assert sneaky.startswith(ws)
+    d = _read_engine(ws).evaluate("read_file", {"path": sneaky}, support_agent(), "s")
+    assert d.effect is Effect.DENY and d.rule_id == "__default__"
+
+
+def test_within_blocks_symlink_escape():
+    ws, _, link = _path_fixture()
+    if link is None:
+        return
+    d = _read_engine(ws).evaluate("read_file", {"path": link}, support_agent(), "s")
+    assert d.effect is Effect.DENY and d.rule_id == "__default__"
+
+
+def test_within_rejects_non_string_and_missing_path():
+    ws, _, _ = _path_fixture()
+    eng = _read_engine(ws)
+    assert eng.evaluate("read_file", {"path": 123}, support_agent(), "s").effect is Effect.DENY
+    assert eng.evaluate("read_file", {}, support_agent(), "s").effect is Effect.DENY
+    assert eng.evaluate("read_file", {"path": "a\x00b"}, support_agent(), "s").effect is Effect.DENY
+
+
+def test_not_within_deny_catches_dotdot_that_startswith_misses():
+    ws, secret, _ = _path_fixture()
+    outside_dir = os.path.dirname(secret)
+    eng = make_engine({
+        "default_effect": "allow",
+        "rules": [{"id": "deny-outside", "effect": "deny", "tools": ["fs.delete"],
+                   "when": {"field": "path", "op": "not_within", "value": ws}}],
+    })
+    sneaky = os.path.join(ws, "..", "secret.txt")
+    d = eng.evaluate("fs.delete", {"path": sneaky}, support_agent(), "s")
+    assert d.effect is Effect.DENY and d.rule_id == "deny-outside"
+    ok = eng.evaluate("fs.delete", {"path": os.path.join(ws, "notes.txt")}, support_agent(), "s")
+    assert ok.effect is Effect.ALLOW
+    assert outside_dir  # fixture sanity
+
+
+def test_example_policy_blocks_dotdot_into_etc():
+    here = os.path.dirname(os.path.abspath(__file__))
+    eng = PolicyEngine(load_policy(os.path.join(here, "..", "examples", "policy.yaml")),
+                       InMemorySessionStore())
+    d = eng.evaluate("fs.delete", {"path": "/home/x/../../etc/passwd"}, support_agent(), "s")
+    assert d.effect is Effect.DENY and d.rule_id == "deny-sensitive-fs"
+
+
 # ---- runner ----------------------------------------------------------------
 
 def _run_all():
