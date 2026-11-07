@@ -91,7 +91,14 @@ class PolicyEngine:
         if matched:
             # min() keeps the FIRST rule among equals, so ties follow file order.
             rule = min(matched, key=lambda r: _PRECEDENCE[r.effect])
-            obligations = dict(rule.obligations)
+            redact_fields = rule.redact_fields
+            if rule.effect is Effect.REDACT:
+                # Every matching redact rule protects its fields, not only the
+                # winner's: otherwise a second rule's secret is forwarded as-is.
+                redact_fields = _union_redact_fields(matched)
+            obligations = _merge_obligations(rule, matched)
+            if len(matched) > 1:
+                obligations["also_matched"] = [r.id for r in matched if r is not rule]
             if not scan.clean:
                 # Always surface threat findings in the audit trail, even on
                 # an allow, so analysts can review what slipped through.
@@ -100,7 +107,7 @@ class PolicyEngine:
                 effect=rule.effect,
                 rule_id=rule.id,
                 reason=rule.reason or f"matched rule {rule.id}",
-                redact_fields=rule.redact_fields,
+                redact_fields=redact_fields,
                 obligations=obligations,
             )
         default_obligations: dict[str, Any] = {}
@@ -129,6 +136,36 @@ class PolicyEngine:
         found, raw_val = _resolve(rule.budget.field, args or {})
         if found:
             self.store.commit(session_id, rule.budget.key, _safe_float(raw_val))
+
+
+def _union_redact_fields(matched: list[Rule]) -> tuple[str, ...]:
+    """All fields named by any matching REDACT rule, in file order, no repeats."""
+    fields: list[str] = []
+    for r in matched:
+        if r.effect is Effect.REDACT:
+            for f in r.redact_fields:
+                if f not in fields:
+                    fields.append(f)
+    return tuple(fields)
+
+
+def _merge_obligations(winner: Rule, matched: list[Rule]) -> dict[str, Any]:
+    """Keep the obligations of EVERY matching rule (e.g. a "notify secops" on a
+    rule that did not win). The winner's values come first; when two rules set
+    the same key to different values, the key holds a list of all of them."""
+    merged: dict[str, Any] = dict(winner.obligations)
+    for r in matched:
+        if r is winner:
+            continue
+        for key, value in r.obligations.items():
+            if key not in merged:
+                merged[key] = value
+            elif merged[key] != value:
+                current = merged[key] if isinstance(merged[key], list) else [merged[key]]
+                if value not in current:
+                    current = current + [value]
+                merged[key] = current
+    return merged
 
 
 def _resolve(path: str, args: dict[str, Any]) -> tuple[bool, Any]:
