@@ -53,8 +53,10 @@ SAMPLES = [
     ("large refund -> human approval",
      support_agent(), "billing.refund", {"amount": 7500}, Effect.REQUIRE_APPROVAL),
 
-    ("refund by an agent lacking the support-agent role -> approval (not small-allow)",
-     outsider(), "billing.refund", {"amount": 50}, Effect.REQUIRE_APPROVAL),
+    # AgentGate deny-overrides: a small refund by the wrong role matches no rule
+    # (rule 3 only covers amounts >= 500), so it falls to the default: deny.
+    ("refund by an agent lacking the support-agent role -> default deny",
+     outsider(), "billing.refund", {"amount": 50}, Effect.DENY),
 
     ("email send with bcc -> redact bcc, forward",
      support_agent(), "email.send",
@@ -89,8 +91,9 @@ SAMPLES = [
     ("budget call 4: $450 refund (running 1800) -> allow",
      support_agent(), "billing.refund", {"amount": 450}, Effect.ALLOW),
 
-    ("budget call 5: $450 refund (1800+450=2250 > 2000 cap) -> approval",
-     support_agent(), "billing.refund", {"amount": 450}, Effect.REQUIRE_APPROVAL),
+    # Over budget: rule 2 stops matching and rule 3 needs >= 500, so default deny.
+    ("budget call 5: $450 refund (1800+450=2250 > 2000 cap) -> default deny",
+     support_agent(), "billing.refund", {"amount": 450}, Effect.DENY),
 
     # ---- threat scanner samples ----
     ("prompt injection in argument -> high score -> approval hold",
