@@ -1,6 +1,8 @@
 # Example mcp-gate policy.
-# Rules are evaluated top to bottom; FIRST match wins. If nothing matches,
-# default_effect applies. Keep default at "deny" for a locked-down posture.
+# AgentGate evaluates EVERY rule and the most restrictive match wins:
+#   deny > require_approval > redact > allow   (ties: first in file)
+# If nothing matches, default_effect applies. Keep default at "deny".
+# Because order no longer decides, each rule must say exactly when it applies.
 
 name: support-agent-policy
 version: "1"
@@ -41,12 +43,16 @@ rules:
       limit: 2000
     reason: "support agents may refund <$500 each, <$2000 per session"
 
-  # 3. Refunds that didn't match rule 2 (too big, over budget, wrong agent)
-  #    require a human to approve.
+  # 3. Refunds of 500 or more require a human to approve. (Small refunds over
+  #    the session budget match no rule and fall to the default: deny.)
   - id: refund-large-approval
     effect: require_approval
     tools: ["billing.refund"]
-    reason: "large or over-budget refunds need human approval"
+    when:
+      field: amount
+      op: ge
+      value: 500
+    reason: "large refunds need human approval"
 
   # 4. Outbound email may go through, but strip any bcc field before forwarding.
   - id: email-redact-bcc
