@@ -6,11 +6,16 @@ synchronous: no I/O, no network, no forwarding. That separation matters — the
 engine is the part you can test exhaustively and reason about, while the messy
 transport/forwarding lives in the proxy.
 
-Evaluation order (first match wins, like a firewall):
-  for each rule in policy order:
-      if rule matches (tool glob, agent glob, roles, condition, budget):
-          return that rule's decision
-  return policy.default_effect
+Evaluation order (AgentGate: deny-overrides, not first-match):
+  collect EVERY rule that matches (tool glob, agent glob, roles, condition,
+  budget), then return the most restrictive one:
+      deny > require_approval > redact > allow
+  Ties go to the rule that appears first in the policy file.
+  If no rule matches, return policy.default_effect.
+
+Why: with first-match, a permissive rule placed above a deny rule silently
+wins, so the order of rules becomes a security control. With deny-overrides,
+a matching deny always wins, wherever it sits in the file.
 """
 
 from __future__ import annotations
@@ -23,6 +28,15 @@ from .identity import AgentIdentity
 from .policy import Policy, Rule
 from .session import SessionStore, InMemorySessionStore
 from .threats import ThreatScanner, ScanResult
+
+
+# Lower number = more restrictive = wins.
+_PRECEDENCE = {
+    Effect.DENY: 0,
+    Effect.REQUIRE_APPROVAL: 1,
+    Effect.REDACT: 2,
+    Effect.ALLOW: 3,
+}
 
 
 class PolicyEngine:
@@ -72,20 +86,23 @@ class PolicyEngine:
                  identity: AgentIdentity, session_id: str) -> Decision:
         args = args or {}
         scan = self.scanner.scan(args)
-        for rule in self.policy.rules:
-            if self._rule_matches(rule, tool, args, identity, session_id, scan):
-                obligations = dict(rule.obligations)
-                if not scan.clean:
-                    # Always surface threat findings in the audit trail, even on
-                    # an allow, so analysts can review what slipped through.
-                    obligations["threat_scan"] = scan.to_dict()
-                return Decision(
-                    effect=rule.effect,
-                    rule_id=rule.id,
-                    reason=rule.reason or f"matched rule {rule.id}",
-                    redact_fields=rule.redact_fields,
-                    obligations=obligations,
-                )
+        matched = [rule for rule in self.policy.rules
+                   if self._rule_matches(rule, tool, args, identity, session_id, scan)]
+        if matched:
+            # min() keeps the FIRST rule among equals, so ties follow file order.
+            rule = min(matched, key=lambda r: _PRECEDENCE[r.effect])
+            obligations = dict(rule.obligations)
+            if not scan.clean:
+                # Always surface threat findings in the audit trail, even on
+                # an allow, so analysts can review what slipped through.
+                obligations["threat_scan"] = scan.to_dict()
+            return Decision(
+                effect=rule.effect,
+                rule_id=rule.id,
+                reason=rule.reason or f"matched rule {rule.id}",
+                redact_fields=rule.redact_fields,
+                obligations=obligations,
+            )
         default_obligations: dict[str, Any] = {}
         if not scan.clean:
             default_obligations["threat_scan"] = scan.to_dict()
