@@ -633,6 +633,104 @@ def test_example_policy_blocks_dotdot_into_etc():
     assert d.effect is Effect.DENY and d.rule_id == "deny-sensitive-fs"
 
 
+# ---- AgentGate: several rules matching the same call ----------------------
+
+def test_all_matching_redact_rules_apply():
+    eng = make_engine({
+        "default_effect": "deny",
+        "rules": [
+            {"id": "a", "effect": "redact", "tools": ["x"], "redact_fields": ["bcc"]},
+            {"id": "b", "effect": "redact", "tools": ["x"], "redact_fields": ["token", "bcc"]},
+        ],
+    })
+    d = eng.evaluate("x", {}, support_agent(), "s")
+    assert d.effect is Effect.REDACT and d.rule_id == "a"
+    assert d.redact_fields == ("bcc", "token")
+
+
+def test_redact_merge_never_forwards_protected_values():
+    eng = make_engine({
+        "default_effect": "deny",
+        "rules": [
+            {"id": "a", "effect": "redact", "tools": ["mail.send"], "redact_fields": ["bcc"]},
+            {"id": "b", "effect": "redact", "tools": ["mail.send"], "redact_fields": ["auth.token"]},
+            {"id": "c", "effect": "allow", "tools": ["mail.send"]},
+        ],
+    })
+    audit_path = os.path.join(tempfile.mkdtemp(), "a.jsonl")
+    gate = Gate(eng, AuditLog(audit_path))
+    args = {"to": "t@x.com", "bcc": "leak@evil.com", "auth": {"token": "SECRET"}}
+    msg = {"jsonrpc": "2.0", "id": 7, "method": "tools/call",
+           "params": {"name": "mail.send", "arguments": args}}
+    out = gate.handle_request(msg, support_agent(), "s")
+    sent = out.forward_message["params"]["arguments"]
+    assert sent["bcc"] == REDACTED and sent["auth"]["token"] == REDACTED
+    assert sent["to"] == "t@x.com"
+    # nothing downstream can recover the originals from what was forwarded
+    import json as _json
+    wire = _json.dumps(out.forward_message)
+    assert "leak@evil.com" not in wire and "SECRET" not in wire
+    # and the agent's original message object was not modified in place
+    assert args["bcc"] == "leak@evil.com"
+
+
+def test_redact_fields_only_from_redact_rules():
+    eng = make_engine({
+        "default_effect": "deny",
+        "rules": [
+            {"id": "d", "effect": "deny", "tools": ["x"]},
+            {"id": "r", "effect": "redact", "tools": ["x"], "redact_fields": ["k"]},
+        ],
+    })
+    d = eng.evaluate("x", {}, support_agent(), "s")
+    assert d.effect is Effect.DENY and d.redact_fields == ()
+
+
+def test_obligations_of_non_winning_rules_are_kept():
+    eng = make_engine({
+        "default_effect": "deny",
+        "rules": [
+            {"id": "a", "effect": "allow", "tools": ["x"],
+             "obligations": {"notify": "secops", "ticket": "T1"}},
+            {"id": "d", "effect": "deny", "tools": ["x"],
+             "obligations": {"notify": "soc"}},
+        ],
+    })
+    d = eng.evaluate("x", {}, support_agent(), "s")
+    assert d.effect is Effect.DENY and d.rule_id == "d"
+    assert d.obligations["notify"] == ["soc", "secops"]
+    assert d.obligations["ticket"] == "T1"
+    assert d.obligations["also_matched"] == ["a"]
+
+
+def test_single_match_has_no_also_matched():
+    eng = make_engine({
+        "default_effect": "deny",
+        "rules": [{"id": "only", "effect": "allow", "tools": ["x"]}],
+    })
+    assert "also_matched" not in eng.evaluate("x", {}, support_agent(), "s").obligations
+
+
+def test_precedence_holds_for_every_rule_order():
+    import itertools
+    effects = ["allow", "deny", "require_approval", "redact"]
+    rank = {"deny": 0, "require_approval": 1, "redact": 2, "allow": 3}
+    for n in (2, 3, 4):
+        for combo in itertools.product(effects, repeat=n):
+            rules = []
+            for i, e in enumerate(combo):
+                rule = {"id": f"r{i}", "effect": e, "tools": ["x"]}
+                if e == "redact":
+                    rule["redact_fields"] = [f"f{i}"]
+                rules.append(rule)
+            d = make_engine({"default_effect": "deny", "rules": rules}).evaluate(
+                "x", {}, support_agent(), "s")
+            expected = min(combo, key=lambda e: rank[e])
+            assert d.effect.value == expected, (combo, d.effect.value)
+            # ties go to the first rule of the winning effect in file order
+            assert d.rule_id == f"r{combo.index(expected)}", (combo, d.rule_id)
+
+
 # ---- runner ----------------------------------------------------------------
 
 def _run_all():
