@@ -16,7 +16,29 @@ Condition forms (as they appear under a rule's `when:` key):
 
 `field` is a dotted path into the call arguments, e.g. "filters.region".
 Supported ops: eq ne lt le gt ge in not_in contains startswith endswith
-               regex exists
+               regex exists within not_within
+
+AgentGate path ops (use these for file paths, not startswith):
+
+  {"field": "path", "op": "within", "value": "./workspace"}
+  {"field": "path", "op": "not_within", "value": ["/etc", "/var/secrets"]}
+
+`within` resolves the REAL path first: "..", "." and symlinks are followed,
+then the result is compared with the real path of each base folder. So
+"./workspace/../../etc/passwd" is NOT within ./workspace, and a symlink inside
+the workspace that points outside it is NOT within it either. `startswith`
+only compares text and is fooled by both tricks.
+
+Fail-safe: a value that is not a string, or a path that cannot be resolved,
+counts as NOT within. So `within` fails (an allow rule does not match) and
+`not_within` succeeds (a deny rule does match).
+
+Limits (stated, not hidden):
+  * Relative paths resolve against AgentGate's working directory. Run AgentGate
+    from the same folder the tool server uses, or use absolute paths.
+  * The check happens at decision time. If the file or a symlink changes
+    between the check and the tool server running the call (TOCTOU), the
+    server may touch a different file. See the AgentGate threat model.
 
 # HARDENING: the regex op compiles user-supplied patterns. A pathological
 # pattern can cause ReDoS. Before production, compile with a timeout (e.g. the
@@ -25,6 +47,7 @@ Supported ops: eq ne lt le gt ge in not_in contains startswith endswith
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -103,6 +126,10 @@ class Comparison(Condition):
                 return str(actual).endswith(str(v))
             if op == "regex":
                 return re.search(str(v), str(actual)) is not None
+            if op == "within":
+                return _is_within(actual, v) is True
+            if op == "not_within":
+                return _is_within(actual, v) is not True
         except (TypeError, ValueError):
             # Type mismatch (e.g. lt on a string) => condition simply fails.
             # It does NOT crash the proxy. Failing the condition is safer than
@@ -110,6 +137,39 @@ class Comparison(Condition):
             return False
 
         raise _ConditionError(f"unknown op: {op}")
+
+
+def _real(path: str) -> str:
+    """Absolute, symlink-resolved, case-normalized path (case-insensitive on Windows)."""
+    return os.path.normcase(os.path.realpath(path))
+
+
+def _is_within(candidate: Any, bases: Any) -> bool | None:
+    """True if candidate's real path is inside one of the base folders.
+
+    Returns None when the answer cannot be trusted (not a string, bad path);
+    callers treat None as "not within".
+    """
+    if not isinstance(candidate, str) or not candidate:
+        return None
+    if isinstance(bases, str):
+        bases = [bases]
+    if not isinstance(bases, (list, tuple)) or not bases:
+        return None
+    try:
+        real = _real(candidate)
+        for base in bases:
+            root = _real(str(base))
+            try:
+                if os.path.commonpath([real, root]) == root:
+                    return True
+            except ValueError:
+                # Different drives on Windows: cannot be inside this base.
+                continue
+        return False
+    except (OSError, ValueError):
+        # e.g. an embedded NUL byte: refuse to guess.
+        return None
 
 
 def _num(x: Any) -> float:
@@ -145,6 +205,7 @@ class Not(Condition):
 _VALID_OPS = {
     "eq", "ne", "lt", "le", "gt", "ge", "in", "not_in",
     "contains", "startswith", "endswith", "regex", "exists",
+    "within", "not_within",
 }
 
 
