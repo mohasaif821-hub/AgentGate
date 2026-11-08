@@ -431,7 +431,10 @@ def test_gate_fail_closed_on_engine_error(monkeypatch=None):
     g.engine.evaluate = boom  # type: ignore
     out = g.handle_request(call(1, "x", {}), support_agent(), "s")
     assert out.forward_message is None
-    assert out.response_to_agent["error"]["code"] == -32603
+    # AgentGate: same generic answer as a denial; the agent is not told the
+    # engine failed (the audit log records __engine_failure__).
+    assert out.response_to_agent["error"] == {
+        "code": -32001, "message": "AgentGate: request blocked by policy"}
 
 
 def test_gate_fail_open_on_engine_error():
@@ -729,6 +732,181 @@ def test_precedence_holds_for_every_rule_order():
             assert d.effect.value == expected, (combo, d.effect.value)
             # ties go to the first rule of the winning effect in file order
             assert d.rule_id == f"r{combo.index(expected)}", (combo, d.rule_id)
+
+
+# ---- AgentGate: hiding tools the agent can never use ----------------------
+
+_DEMO_LIKE = {
+    "default_effect": "deny",
+    "rules": [
+        {"id": "read-ws", "effect": "allow", "tools": ["list_files", "read_file"],
+         "when": {"field": "path", "op": "within", "value": "/ws"}},
+        {"id": "deny-delete", "effect": "deny", "tools": ["delete_file"],
+         "reason": "Deletes cannot be undone"},
+    ],
+}
+
+
+def test_visible_hides_unconditionally_denied_tool():
+    eng = make_engine(_DEMO_LIKE)
+    assert eng.tool_visible("delete_file", support_agent()) is False
+
+
+def test_visible_keeps_tool_allowed_only_under_conditions():
+    eng = make_engine(_DEMO_LIKE)
+    assert eng.tool_visible("read_file", support_agent()) is True
+    assert eng.tool_visible("list_files", support_agent()) is True
+
+
+def test_visible_hides_tool_no_rule_allows_under_default_deny():
+    eng = make_engine(_DEMO_LIKE)
+    assert eng.tool_visible("db_write", support_agent()) is False
+
+
+def test_visible_rules_that_do_not_hide():
+    a = support_agent()
+    # default allow: an unknown tool could pass, so it stays visible
+    assert make_engine({"default_effect": "allow", "rules": []}).tool_visible("x", a)
+    # a deny with a condition may not apply to every call: keep visible
+    eng = make_engine({"default_effect": "allow", "rules": [
+        {"id": "d", "effect": "deny", "tools": ["x"],
+         "when": {"field": "path", "op": "startswith", "value": "/etc"}}]})
+    assert eng.tool_visible("x", a)
+    # a deny aimed at a different agent does not hide it from this one
+    eng = make_engine({"default_effect": "allow", "rules": [
+        {"id": "d", "effect": "deny", "tools": ["x"], "agents": ["other-*"]}]})
+    assert eng.tool_visible("x", a)
+    # approval and redact can still let a call through: keep visible
+    for effect in ("require_approval", "redact"):
+        eng = make_engine({"default_effect": "deny", "rules": [
+            {"id": "r", "effect": effect, "tools": ["x"], "redact_fields": ["k"]}]})
+        assert eng.tool_visible("x", a), effect
+
+
+def test_visible_unconditional_deny_beats_allow():
+    eng = make_engine({"default_effect": "deny", "rules": [
+        {"id": "a", "effect": "allow", "tools": ["x"]},
+        {"id": "d", "effect": "deny", "tools": ["x"]}]})
+    assert eng.tool_visible("x", support_agent()) is False
+
+
+def test_hidden_tool_called_anyway_is_still_denied():
+    eng = make_engine(_DEMO_LIKE)
+    d = eng.evaluate("delete_file", {"path": "/ws/a.txt"}, support_agent(), "s")
+    assert d.effect is Effect.DENY and d.rule_id == "deny-delete"
+
+
+def _proxy(policy=_DEMO_LIKE):
+    from mcpgate.stdio_proxy import StdioProxy
+    p = StdioProxy(make_gate(policy), ["unused"])
+    p._identity = support_agent()
+    return p
+
+
+def _tools_list_response(id_, names):
+    return {"jsonrpc": "2.0", "id": id_, "result": {
+        "tools": [{"name": n, "inputSchema": {"type": "object"}} for n in names],
+        "nextCursor": "c2"}}
+
+
+def _upstream(p, obj_or_bytes):
+    import json as _json
+    raw = obj_or_bytes if isinstance(obj_or_bytes, bytes) else (
+        _json.dumps(obj_or_bytes) + "\n").encode()
+    out = p.process_upstream_line(raw)
+    return out, raw
+
+
+def test_proxy_filters_tracked_tools_list_response():
+    import json as _json
+    from mcpgate.stdio_proxy import _id_key
+    p = _proxy()
+    p._pending_lists.add(_id_key(5))
+    out, _ = _upstream(p, _tools_list_response(5, ["list_files", "read_file", "delete_file"]))
+    msg = _json.loads(out)
+    assert [t["name"] for t in msg["result"]["tools"]] == ["list_files", "read_file"]
+    assert msg["result"]["nextCursor"] == "c2"     # other fields untouched
+    assert msg["result"]["tools"][0]["inputSchema"] == {"type": "object"}
+    assert not p._pending_lists                    # each response handled once
+
+
+def test_proxy_passes_other_lines_unchanged():
+    from mcpgate.stdio_proxy import _id_key
+    p = _proxy()
+    p._pending_lists.add(_id_key(5))
+    # a different id, a notification, an error reply, and non-JSON: byte for byte
+    for item in (_tools_list_response(6, ["delete_file"]),
+                 {"jsonrpc": "2.0", "method": "notifications/tools/list_changed"},
+                 b"not json\n"):
+        out, raw = _upstream(p, item)
+        assert out == raw
+    out, raw = _upstream(p, {"jsonrpc": "2.0", "id": 5, "error": {"code": -1, "message": "x"}})
+    assert out == raw
+
+
+def test_proxy_fails_safe_on_malformed_tools_list():
+    import json as _json
+    from mcpgate.stdio_proxy import _id_key
+    bad_results = [
+        {"tools": "not-a-list"},
+        {},
+        {"tools": [{"name": "read_file"}, {"no_name": True}]},
+        {"tools": [{"name": "read_file"}, "delete_file"]},
+        "oops",
+    ]
+    for i, result in enumerate(bad_results):
+        p = _proxy()
+        p._pending_lists.add(_id_key(i))
+        out, _ = _upstream(p, {"jsonrpc": "2.0", "id": i, "result": result})
+        msg = _json.loads(out)
+        assert "result" not in msg, result          # never an unfiltered list
+        assert msg["error"]["message"] == "AgentGate: request blocked by policy"
+        assert b"delete_file" not in out and b"read_file" not in out
+
+
+def test_proxy_fails_safe_when_policy_check_raises():
+    import json as _json
+    from mcpgate.stdio_proxy import _id_key
+    p = _proxy()
+    def boom(*a, **k):
+        raise RuntimeError("simulated bug")
+    p.gate.engine.tool_visible = boom  # type: ignore
+    p._pending_lists.add(_id_key(1))
+    out, _ = _upstream(p, _tools_list_response(1, ["read_file", "delete_file"]))
+    msg = _json.loads(out)
+    assert "result" not in msg and msg["error"]["code"] == -32001
+
+
+# ---- AgentGate: what the agent sees vs what the audit log keeps ----------
+
+def test_denial_message_gives_no_rule_or_reason():
+    g = make_gate(_DEMO_LIKE)
+    out = g.handle_request(call(1, "delete_file", {"path": "/ws/a"}), support_agent(), "s")
+    err = out.response_to_agent["error"]
+    assert err == {"code": -32001, "message": "AgentGate: request blocked by policy"}
+    import json as _json
+    text = _json.dumps(out.response_to_agent)
+    assert "deny-delete" not in text and "undone" not in text
+
+
+def test_approval_message_is_generic():
+    g = make_gate({"default_effect": "deny", "rules": [
+        {"id": "secret-rule-name", "effect": "require_approval", "tools": ["x"],
+         "reason": "internal detail"}]})
+    out = g.handle_request(call(1, "x", {}), support_agent(), "s")
+    assert out.response_to_agent["error"] == {
+        "code": -32002, "message": "AgentGate: request requires human approval"}
+
+
+def test_audit_log_keeps_rule_and_reason():
+    import json as _json
+    g = make_gate(_DEMO_LIKE)
+    g.handle_request(call(1, "delete_file", {"path": "/ws/a"}), support_agent(), "s")
+    with open(g.audit.path, encoding="utf-8") as f:
+        rec = _json.loads(f.readlines()[-1])
+    assert rec["tool"] == "delete_file"
+    assert rec["decision"]["rule_id"] == "deny-delete"
+    assert rec["decision"]["reason"] == "Deletes cannot be undone"
 
 
 # ---- runner ----------------------------------------------------------------
