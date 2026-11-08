@@ -7,9 +7,11 @@ Run after demo_setup.py:
 It starts AgentGate with EXACTLY the command, arguments and environment that
 demo_setup.py gave Claude Desktop, then talks to it the way an MCP client does:
 initialize -> initialized -> tools/list -> tools/call. It checks that allowed
-calls work, that blocked calls are refused by AgentGate, and that blocked calls
-never reach the tool server (using the server's own evidence log). Finally it
-verifies the audit log's hash chain.
+calls work, that blocked calls are refused by AgentGate, that blocked calls
+never reach the tool server (using the server's own evidence log), that the
+always-denied delete_file tool is hidden from the agent's tool list, and that
+the agent only ever sees a generic denial while the audit log keeps the rule
+that fired. Finally it verifies the audit log's hash chain.
 
 If every line says PASS, the same setup should work from Claude Desktop.
 """
@@ -80,11 +82,12 @@ class Client:
         return self.proc.stderr.read().decode("utf-8", errors="replace")
 
 
-def denied_by_agentgate(reply: dict, rule: str | None = None) -> bool:
-    err = reply.get("error") or {}
-    if err.get("code") != -32001:
-        return False
-    return rule is None or (err.get("data") or {}).get("rule_id") == rule
+BLOCKED = {"code": -32001, "message": "AgentGate: request blocked by policy"}
+
+
+def denied_by_agentgate(reply: dict) -> bool:
+    """Blocked, and the agent learns nothing else (no rule name, no reason)."""
+    return reply.get("error") == BLOCKED and "result" not in reply
 
 
 def tool_ok(reply: dict) -> bool:
@@ -117,7 +120,9 @@ def main() -> int:
     ws = root / "workspace"
     secret = root / "outside" / "secret.txt"
     server_log = root / "server_received.log"
+    audit_log = root / "audit.jsonl"
     seen_before = len(read_log(server_log))
+    audited_before = len(read_log(audit_log))
 
     client = Client(cfg)
     try:
@@ -133,8 +138,9 @@ def main() -> int:
 
         tools = client.request("tools/list")
         names = sorted(t["name"] for t in (tools.get("result") or {}).get("tools", []))
-        check("tool list reaches the agent", names == ["delete_file", "list_files", "read_file"],
+        check("tool list reaches the agent", "read_file" in names and "list_files" in names,
               str(names))
+        check("delete_file is hidden from the agent", "delete_file" not in names, str(names))
 
         r = client.call("list_files", str(ws))
         check("ALLOW: list the workspace", tool_ok(r) and "notes.txt" in text_of(r), json.dumps(r)[:200])
@@ -144,13 +150,15 @@ def main() -> int:
 
         sneaky = str(ws) + os.sep + ".." + os.sep + "outside" + os.sep + "secret.txt"
         r = client.call("read_file", sneaky)
-        check("DENY: ../ trick to read the secret", denied_by_agentgate(r, "__default__"), json.dumps(r)[:200])
+        check("DENY: ../ trick to read the secret", denied_by_agentgate(r), json.dumps(r)[:200])
 
         r = client.call("read_file", str(secret))
-        check("DENY: read the secret directly", denied_by_agentgate(r, "__default__"), json.dumps(r)[:200])
+        check("DENY: read the secret directly", denied_by_agentgate(r), json.dumps(r)[:200])
 
         r = client.call("delete_file", str(ws / "report.txt"))
-        check("DENY: delete a workspace file", denied_by_agentgate(r, "deny-delete"), json.dumps(r)[:200])
+        check("DENY: calling the hidden delete_file anyway", denied_by_agentgate(r), json.dumps(r)[:200])
+        check("denial tells the agent no rule name or reason",
+              "deny-delete" not in json.dumps(r) and "undone" not in json.dumps(r), json.dumps(r))
         check("report.txt still exists after the delete attempt", (ws / "report.txt").exists())
     finally:
         stderr = client.close()
@@ -160,6 +168,16 @@ def main() -> int:
     check("only the 2 allowed calls reached the tool server",
           reached_desc == [("list_files", "workspace"), ("read_file", "notes.txt")],
           str(reached_desc))
+
+    audited = [(e["tool"], e["decision"]["effect"], e["decision"]["rule_id"])
+               for e in read_log(audit_log)[audited_before:]]
+    check("audit log records the rule behind every decision", audited == [
+        ("list_files", "allow", "read-workspace"),
+        ("read_file", "allow", "read-workspace"),
+        ("read_file", "deny", "__default__"),
+        ("read_file", "deny", "__default__"),
+        ("delete_file", "deny", "deny-delete"),
+    ], str(audited))
 
     verify = subprocess.run(
         [cfg["command"], "-m", "mcpgate.cli", "verify", "--audit", str(root / "audit.jsonl")],
