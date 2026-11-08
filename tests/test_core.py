@@ -909,6 +909,131 @@ def test_audit_log_keeps_rule_and_reason():
     assert rec["decision"]["reason"] == "Deletes cannot be undone"
 
 
+# ---- AgentGate: monitor mode (records, never blocks) ---------------------
+
+def _monitor_gate(policy=_DEMO_LIKE, **kw):
+    eng = make_engine(policy)
+    audit = AuditLog(os.path.join(tempfile.mkdtemp(), "a.jsonl"))
+    return Gate(eng, audit, mode="monitor", **kw)
+
+
+def _last_audit(g):
+    import json as _json
+    with open(g.audit.path, encoding="utf-8") as f:
+        return _json.loads(f.readlines()[-1])
+
+
+def test_monitor_forwards_denied_call_unchanged_and_audits_would_be_decision():
+    g = _monitor_gate()
+    msg = call(1, "delete_file", {"path": "/ws/a"})
+    out = g.handle_request(msg, support_agent(), "s")
+    assert out.forward_message == msg and out.response_to_agent is None
+    rec = _last_audit(g)
+    assert rec["mode"] == "monitor"
+    assert rec["decision"]["effect"] == "deny"
+    assert rec["decision"]["rule_id"] == "deny-delete"
+
+
+def test_monitor_does_not_redact():
+    g = _monitor_gate({"default_effect": "deny", "rules": [
+        {"id": "r", "effect": "redact", "tools": ["x"], "redact_fields": ["k"]}]})
+    msg = call(1, "x", {"k": "secret"})
+    out = g.handle_request(msg, support_agent(), "s")
+    assert out.forward_message["params"]["arguments"]["k"] == "secret"
+    assert _last_audit(g)["decision"]["effect"] == "redact"
+
+
+def test_monitor_does_not_call_approval_hook():
+    calls = []
+    g = _monitor_gate({"default_effect": "require_approval", "rules": []},
+                      approval_hook=lambda *a: calls.append(a) or False)
+    out = g.handle_request(call(1, "x", {}), support_agent(), "s")
+    assert out.forward_message is not None and calls == []
+
+
+def test_monitor_forwards_even_on_engine_failure():
+    g = _monitor_gate()
+    def boom(*a, **k):
+        raise RuntimeError("simulated")
+    g.engine.evaluate = boom  # type: ignore
+    out = g.handle_request(call(1, "read_file", {"path": "/ws/a"}), support_agent(), "s")
+    assert out.forward_message is not None
+    rec = _last_audit(g)
+    assert rec["mode"] == "monitor" and rec["decision"]["rule_id"] == "__engine_failure__"
+
+
+def test_enforce_is_default_and_marked_in_audit():
+    g = make_gate(_DEMO_LIKE)
+    assert g.mode == "enforce"
+    out = g.handle_request(call(1, "delete_file", {"path": "/ws/a"}), support_agent(), "s")
+    assert out.forward_message is None
+    assert _last_audit(g)["mode"] == "enforce"
+
+
+def test_unknown_mode_rejected():
+    try:
+        _monitor_gate().__class__(make_engine(_DEMO_LIKE),
+                                  AuditLog(os.path.join(tempfile.mkdtemp(), "a.jsonl")),
+                                  mode="off")
+    except ValueError:
+        return
+    raise AssertionError("mode='off' should be rejected")
+
+
+def test_monitor_does_not_hide_tools():
+    import json as _json
+    from mcpgate.stdio_proxy import StdioProxy, _id_key
+    p = StdioProxy(_monitor_gate(), ["unused"])
+    p._identity = support_agent()
+    p._pending_lists.add(_id_key(3))
+    out, raw = _upstream(p, _tools_list_response(3, ["read_file", "delete_file"]))
+    assert out == raw
+    assert not p._pending_lists
+
+
+def test_audit_chain_verifies_across_old_and_new_records():
+    # records written before AgentGate added "mode" must still verify
+    import json as _json
+    from mcpgate.audit import AuditRecord, GENESIS
+    path = os.path.join(tempfile.mkdtemp(), "a.jsonl")
+    old = AuditRecord(seq=0, timestamp=1.0, session_id="s", agent_id="a",
+                      agent_roles=[], tool="t", args_hash="h", decision={"effect": "allow"},
+                      policy_name="p", policy_version="1", prev_hash=GENESIS)
+    body = old.body(); body.pop("mode")            # exactly what old versions wrote
+    old_hash = __import__("hashlib").sha256(
+        _json.dumps(body, separators=(",", ":"), sort_keys=True).encode()).hexdigest()
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(_json.dumps({**body, "hash": old_hash}, separators=(",", ":"), sort_keys=True) + "\n")
+    log = AuditLog(path)
+    g = Gate(make_engine(_DEMO_LIKE), log, mode="monitor")
+    g.handle_request(call(1, "read_file", {"path": "/ws/a"}), support_agent(), "s")
+    ok, msg = log.verify()
+    assert ok, msg
+
+
+def test_cli_refuses_monitor_without_confirmation():
+    import contextlib, io
+    from mcpgate import cli
+    here = os.path.dirname(os.path.abspath(__file__))
+    policy = os.path.join(here, "..", "examples", "policy.yaml")
+    audit = os.path.join(tempfile.mkdtemp(), "a.jsonl")
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        rc = cli.main(["run", "--policy", policy, "--audit", audit,
+                       "--mode", "monitor", "--", "python", "-c", "pass"])
+    assert rc == 2
+    assert "refusing to start" in err.getvalue()
+    assert not os.path.exists(audit)                # nothing ran
+
+
+def test_report_flags_monitor_records():
+    from mcpgate.report import generate_report
+    g = _monitor_gate()
+    g.handle_request(call(1, "delete_file", {"path": "/ws/a"}), support_agent(), "s")
+    md = generate_report(g.audit.path)
+    assert "MONITOR mode" in md and "NOT enforced" in md
+
+
 # ---- runner ----------------------------------------------------------------
 
 def _run_all():
