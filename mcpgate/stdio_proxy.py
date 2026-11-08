@@ -40,6 +40,7 @@ import sys
 import threading
 from typing import Any
 
+from .enforce import blocked_response
 from .gate import Gate
 from .identity import (
     AgentIdentity, IdentityError, IdentityVerifier, HmacVerifier,
@@ -64,6 +65,12 @@ class StdioProxy:
         self.session_id = session_id
         self.max_age_seconds = max_age_seconds
         self._proc: subprocess.Popen[bytes] | None = None
+        self._identity: AgentIdentity = AgentIdentity.anonymous()
+        # ids of tools/list requests sent upstream whose responses must be filtered
+        self._pending_lists: set[Any] = set()
+        self._pending_lock = threading.Lock()
+        # client stdout is written from two threads; keep each message whole
+        self._write_lock = threading.Lock()
 
     def _resolve_identity(self) -> AgentIdentity:
         token = os.environ.get("MCPGATE_AGENT_TOKEN")
@@ -79,6 +86,7 @@ class StdioProxy:
 
     def run(self) -> int:
         identity = self._resolve_identity()
+        self._identity = identity
         self._proc = subprocess.Popen(
             self.upstream_cmd,
             stdin=subprocess.PIPE,
@@ -124,6 +132,10 @@ class StdioProxy:
             self._write_client(outcome.response_to_agent)
 
         if outcome.forward_message is not None:
+            if (isinstance(message, dict) and message.get("method") == "tools/list"
+                    and message.get("id") is not None):
+                with self._pending_lock:
+                    self._pending_lists.add(_id_key(message["id"]))
             data = (json.dumps(outcome.forward_message,
                                separators=(",", ":")) + "\n").encode()
             upstream_out.write(data)
@@ -132,9 +144,73 @@ class StdioProxy:
     def _pump_upstream_to_client(self) -> None:
         assert self._proc and self._proc.stdout
         for raw in self._proc.stdout:
-            sys.stdout.buffer.write(raw)
-            sys.stdout.buffer.flush()
+            out = self.process_upstream_line(raw)
+            with self._write_lock:
+                sys.stdout.buffer.write(out)
+                sys.stdout.buffer.flush()
+
+    def process_upstream_line(self, raw: bytes) -> bytes:
+        """Return what to send the client for one line from upstream.
+
+        Only responses to tracked tools/list requests are changed; every other
+        line passes through byte for byte.
+        """
+        with self._pending_lock:
+            if not self._pending_lists:
+                return raw
+        try:
+            msg = json.loads(raw)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return raw  # not JSON: the client cannot read a tool list from it
+        if not isinstance(msg, dict) or "id" not in msg:
+            return raw
+        key = _id_key(msg["id"])
+        with self._pending_lock:
+            if key not in self._pending_lists:
+                return raw
+            self._pending_lists.discard(key)
+        if "result" not in msg:
+            return raw  # an error response carries no tools
+        try:
+            filtered, hidden = self.filter_tools_list(msg)
+        except Exception:
+            log.exception("could not filter tools/list response; sending an error instead")
+            return _line(blocked_response(msg["id"]))
+        if hidden:
+            log.info("hid %d tool(s) from the agent: %s", len(hidden), ", ".join(hidden))
+        return _line(filtered)
+
+    def filter_tools_list(self, msg: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+        """Remove tools this agent can never use. Raises on anything malformed."""
+        result = msg["result"]
+        if not isinstance(result, dict) or not isinstance(result.get("tools"), list):
+            raise ValueError("tools/list result has no tools list")
+        kept: list[Any] = []
+        hidden: list[str] = []
+        for tool in result["tools"]:
+            name = tool.get("name") if isinstance(tool, dict) else None
+            if not isinstance(name, str) or not name:
+                raise ValueError("tool entry without a name")
+            if self.gate.engine.tool_visible(name, self._identity):
+                kept.append(tool)
+            else:
+                hidden.append(name)
+        new_result = dict(result)
+        new_result["tools"] = kept
+        new_msg = dict(msg)
+        new_msg["result"] = new_result
+        return new_msg, hidden
 
     def _write_client(self, obj: dict[str, Any]) -> None:
-        sys.stdout.buffer.write((json.dumps(obj, separators=(",", ":")) + "\n").encode())
-        sys.stdout.buffer.flush()
+        with self._write_lock:
+            sys.stdout.buffer.write(_line(obj))
+            sys.stdout.buffer.flush()
+
+
+def _line(obj: dict[str, Any]) -> bytes:
+    return (json.dumps(obj, separators=(",", ":")) + "\n").encode()
+
+
+def _id_key(request_id: Any) -> Any:
+    """Hashable key for a JSON-RPC id (ints and strings are kept distinct)."""
+    return (type(request_id).__name__, json.dumps(request_id, sort_keys=True))

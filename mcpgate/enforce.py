@@ -67,12 +67,19 @@ def jsonrpc_error(request_id: Any, code: int, message: str,
     return {"jsonrpc": "2.0", "id": request_id, "error": err}
 
 
+# AgentGate: what the AGENT sees is deliberately generic. The rule name, the
+# reason and any internal error stay in the audit log for the operator; the
+# agent (which may be under an attacker's control) learns only "blocked" or
+# "needs approval", never which rule fired or what to try instead.
+BLOCKED_MESSAGE = "AgentGate: request blocked by policy"
+APPROVAL_MESSAGE = "AgentGate: request requires human approval"
+
+
+def blocked_response(request_id: Any) -> dict[str, Any]:
+    return jsonrpc_error(request_id, POLICY_DENIED_CODE, BLOCKED_MESSAGE)
+
+
 def build_denial_response(request_id: Any, decision: Decision) -> dict[str, Any]:
-    code = (APPROVAL_REQUIRED_CODE if decision.effect is Effect.REQUIRE_APPROVAL
-            else POLICY_DENIED_CODE)
-    return jsonrpc_error(
-        request_id,
-        code,
-        f"mcp-gate: {decision.effect.value} by rule '{decision.rule_id}'",
-        data={"reason": decision.reason, "rule_id": decision.rule_id},
-    )
+    if decision.effect is Effect.REQUIRE_APPROVAL:
+        return jsonrpc_error(request_id, APPROVAL_REQUIRED_CODE, APPROVAL_MESSAGE)
+    return blocked_response(request_id)

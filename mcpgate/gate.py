@@ -23,6 +23,7 @@ from .decision import Decision, Effect
 from .engine import PolicyEngine
 from .enforce import (
     FailMode,
+    blocked_response,
     build_denial_response,
     jsonrpc_error,
     redact_arguments,
@@ -143,9 +144,9 @@ class Gate:
                                  forwarded=False)
         return GateOutcome(
             forward_message=None,
-            response_to_agent=jsonrpc_error(
-                request_id, INTERNAL_ERROR_CODE,
-                "mcp-gate: policy evaluation failed; blocked (fail-closed)"),
+            # Same generic answer as a normal denial: the agent is not told
+            # that the engine failed. The audit log records __engine_failure__.
+            response_to_agent=blocked_response(request_id),
             decision=None,
         )
 

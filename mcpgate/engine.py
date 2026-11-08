@@ -25,6 +25,7 @@ from typing import Any
 
 from .decision import Decision, Effect
 from .identity import AgentIdentity
+from .conditions import AlwaysTrue
 from .policy import Policy, Rule
 from .session import SessionStore, InMemorySessionStore
 from .threats import ThreatScanner, ScanResult
@@ -120,6 +121,42 @@ class PolicyEngine:
             obligations=default_obligations,
         )
 
+    def tool_visible(self, tool: str, identity: AgentIdentity) -> bool:
+        """Should this tool appear in the agent's tools/list?
+
+        Called before the agent asks for anything, so the arguments are
+        unknown. A tool is HIDDEN when, for this agent, every possible call
+        would be denied:
+          * a deny rule covers it with no condition at all (deny always wins), or
+          * no rule could ever allow it (no allow / redact / require_approval
+            rule covers it) and the default effect is deny.
+        Everything else stays visible, e.g. read_file allowed only inside the
+        workspace. Hiding is extra: evaluate() still denies a hidden tool if the
+        agent calls it anyway.
+        """
+        could_pass = False
+        for rule in self.policy.rules:
+            if not self._applies_ignoring_args(rule, tool, identity):
+                continue
+            if rule.effect is Effect.DENY:
+                if _unconditional(rule):
+                    return False
+            else:
+                could_pass = True
+        return could_pass or self.policy.default_effect is not Effect.DENY
+
+    def _applies_ignoring_args(self, rule: Rule, tool: str,
+                               identity: AgentIdentity) -> bool:
+        if not self._matches_any_glob(tool, rule.tools):
+            return False
+        if not self._matches_any_glob(identity.agent_id, rule.agents):
+            return False
+        if rule.require_roles and not all(
+            identity.has_role(r) for r in rule.require_roles
+        ):
+            return False
+        return True
+
     def commit_budget(self, tool: str, args: dict[str, Any],
                       decision: Decision, session_id: str) -> None:
         """Record spend against a budget AFTER a call is forwarded.
@@ -136,6 +173,13 @@ class PolicyEngine:
         found, raw_val = _resolve(rule.budget.field, args or {})
         if found:
             self.store.commit(session_id, rule.budget.key, _safe_float(raw_val))
+
+
+def _unconditional(rule: Rule) -> bool:
+    """True if the rule applies whatever the call's arguments are."""
+    return (isinstance(rule.condition, AlwaysTrue)
+            and rule.budget is None
+            and rule.min_threat_score is None)
 
 
 def _union_redact_fields(matched: list[Rule]) -> tuple[str, ...]:
