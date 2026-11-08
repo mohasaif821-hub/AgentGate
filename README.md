@@ -42,6 +42,25 @@ extended. It does **not** claim to be a finished, certified, or
 Every place that needs production hardening is marked in the source with a
 `# HARDENING:` comment. Search for it before deploying.
 
+### Monitor mode — no protection
+
+> **WARNING: in monitor mode NO calls are blocked or changed.**
+> Use it only in an isolated test environment with dummy data.
+
+`run --mode monitor` evaluates and audits every call exactly as enforce mode
+would, then forwards it **untouched**: nothing is denied, redacted, held for
+approval or hidden from the tool list. Its only purpose is to try a policy and
+see what it *would* block before turning it on.
+
+- It will not start without the explicit flag
+  `--i-understand-this-disables-protection`.
+- It prints a warning when it starts, and every audit record carries
+  `"mode": "monitor"`, so a monitored period can never pass for a protected one
+  (the `report` command flags it too).
+- AgentGate cannot tell whether an environment is isolated or the data is real.
+  That responsibility stays with whoever runs it. The software is provided
+  "AS IS", without warranty, under the Apache 2.0 license.
+
 ---
 
 ## Why this exists
