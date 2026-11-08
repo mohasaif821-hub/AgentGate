@@ -33,6 +33,9 @@ from .identity import AgentIdentity
 
 log = logging.getLogger("mcpgate")
 
+ENFORCE = "enforce"
+MONITOR = "monitor"
+
 # The MCP method we govern. Other methods (initialize, tools/list, ping, ...)
 # pass through untouched — we only gate ACTIONS, not discovery/handshake.
 GOVERNED_METHOD = "tools/call"
@@ -60,11 +63,17 @@ def _default_approval_hook(tool, args, identity, decision) -> bool:
 class Gate:
     def __init__(self, engine: PolicyEngine, audit: AuditLog, *,
                  fail_mode: FailMode = FailMode.CLOSED,
-                 approval_hook: ApprovalHook | None = None) -> None:
+                 approval_hook: ApprovalHook | None = None,
+                 mode: str = ENFORCE) -> None:
+        if mode not in (ENFORCE, MONITOR):
+            raise ValueError(f"unknown mode {mode!r}")
         self.engine = engine
         self.audit = audit
         self.fail_mode = fail_mode
         self.approval_hook = approval_hook or _default_approval_hook
+        # AgentGate monitor mode: every call is evaluated and audited, but
+        # NOTHING is blocked, changed or held for approval. No protection.
+        self.mode = mode
 
     def handle_request(self, message: dict[str, Any],
                        identity: AgentIdentity, session_id: str) -> GateOutcome:
@@ -94,7 +103,20 @@ class Gate:
             args=arguments, decision=decision,
             policy_name=self.engine.policy.name,
             policy_version=self.engine.policy.version,
+            mode=self.mode,
         )
+
+        if self.mode == MONITOR:
+            # Record what WOULD have happened, then forward the call untouched:
+            # no denial, no redaction, no approval hold.
+            if decision.effect is not Effect.ALLOW:
+                log.warning("MONITOR (not enforced): would have applied %s to "
+                            "tool=%s by rule '%s'", decision.effect.value, tool,
+                            decision.rule_id)
+            if decision.effect in (Effect.ALLOW, Effect.REDACT):
+                self.engine.commit_budget(tool, arguments, decision, session_id)
+            return GateOutcome(forward_message=message, response_to_agent=None,
+                               decision=decision)
 
         if decision.effect is Effect.ALLOW:
             self.engine.commit_budget(tool, arguments, decision, session_id)
@@ -132,7 +154,7 @@ class Gate:
 
     def _handle_engine_failure(self, message, request_id, tool, arguments,
                                identity, session_id) -> GateOutcome:
-        if self.fail_mode is FailMode.OPEN:
+        if self.fail_mode is FailMode.OPEN or self.mode == MONITOR:
             # Availability-first: forward despite the error. Still audited so the
             # gap is visible after the fact.
             self._safe_audit_failure(session_id, identity, tool, arguments,
@@ -162,6 +184,7 @@ class Gate:
                             reason=f"engine failure; fail_mode={self.fail_mode.value}"),
                 policy_name=self.engine.policy.name,
                 policy_version=self.engine.policy.version,
+                mode=self.mode,
             )
         except Exception:
             log.exception("failed to audit engine-failure event")

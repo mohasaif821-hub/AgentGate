@@ -171,6 +171,17 @@ class StdioProxy:
             self._pending_lists.discard(key)
         if "result" not in msg:
             return raw  # an error response carries no tools
+        if self.gate.mode == "monitor":
+            # Monitor mode changes nothing: report what WOULD be hidden.
+            try:
+                _, hidden = self.filter_tools_list(msg)
+                if hidden:
+                    log.warning("MONITOR (not enforced): would have hidden %s",
+                                ", ".join(hidden))
+            except Exception:
+                log.warning("MONITOR (not enforced): tools/list could not be "
+                            "checked; in enforce mode the agent would get an error")
+            return raw
         try:
             filtered, hidden = self.filter_tools_list(msg)
         except Exception:

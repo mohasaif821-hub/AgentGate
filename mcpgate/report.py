@@ -73,6 +73,11 @@ def generate_report(audit_path: str | Path) -> str:
     status = "PASS — chain intact" if chain_ok else "FAIL — TAMPER DETECTED"
     out.append(f"- Integrity check: **{status}** ({chain_msg})")
     out.append(f"- Records: **{len(records)}**")
+    monitor_n = sum(1 for r in records if r.get("mode") == "monitor")
+    if monitor_n:
+        out.append(f"- **WARNING: {monitor_n} of {len(records)} records were made in "
+                   "MONITOR mode. Those decisions were recorded but NOT enforced: "
+                   "every one of those calls reached its tool.**")
     if first_ts and last_ts:
         out.append(f"- Window: {_iso(first_ts)} → {_iso(last_ts)}")
     out.append("")

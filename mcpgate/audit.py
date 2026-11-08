@@ -68,6 +68,9 @@ class AuditRecord:
     policy_name: str
     policy_version: str
     prev_hash: str
+    # AgentGate: "enforce" or "monitor". In monitor mode the decision was
+    # recorded but NOT applied, so an auditor must be able to tell them apart.
+    mode: str = "enforce"
 
     def body(self) -> dict[str, Any]:
         # Everything EXCEPT this record's own hash. The hash is computed over
@@ -84,6 +87,7 @@ class AuditRecord:
             "policy_name": self.policy_name,
             "policy_version": self.policy_version,
             "prev_hash": self.prev_hash,
+            "mode": self.mode,
         }
 
     def compute_hash(self) -> str:
@@ -117,7 +121,8 @@ class AuditLog:
 
     def record(self, *, session_id: str, identity: AgentIdentity, tool: str,
                args: dict[str, Any], decision: Decision,
-               policy_name: str, policy_version: str) -> AuditRecord:
+               policy_name: str, policy_version: str,
+               mode: str = "enforce") -> AuditRecord:
         with self._lock:
             rec = AuditRecord(
                 seq=self._seq,
@@ -131,6 +136,7 @@ class AuditLog:
                 policy_name=policy_name,
                 policy_version=policy_version,
                 prev_hash=self._last_hash,
+                mode=mode,
             )
             rec_hash = rec.compute_hash()
             line = json.dumps({**rec.body(), "hash": rec_hash},

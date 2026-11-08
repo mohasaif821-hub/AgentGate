@@ -106,7 +106,22 @@ def _cmd_keygen(args: argparse.Namespace) -> int:
     return 0
 
 
+MONITOR_WARNING = (
+    "WARNING: AgentGate is in MONITOR mode. NO calls are blocked or changed.\n"
+    "Use only in an isolated test environment with dummy data."
+)
+MONITOR_CONFIRM_FLAG = "--i-understand-this-disables-protection"
+
+
 def _cmd_run(args: argparse.Namespace) -> int:
+    if args.mode == "monitor":
+        if not args.i_understand_this_disables_protection:
+            print("refusing to start: monitor mode disables all protection. "
+                  f"Add {MONITOR_CONFIRM_FLAG} to confirm, and use it only in an "
+                  "isolated test environment with dummy data.", file=sys.stderr)
+            return 2
+        banner = "!" * 72
+        print(f"{banner}\n{MONITOR_WARNING}\n{banner}", file=sys.stderr)
     try:
         policy = load_policy(args.policy)
     except PolicyError as exc:
@@ -115,7 +130,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
     engine = PolicyEngine(policy)
     audit = AuditLog(args.audit)
-    gate = Gate(engine, audit, fail_mode=FailMode(args.fail))
+    gate = Gate(engine, audit, fail_mode=FailMode(args.fail), mode=args.mode)
 
     verifier = None
     secret = None
@@ -167,13 +182,20 @@ def build_parser() -> argparse.ArgumentParser:
     pk = sub.add_parser("keygen", help="generate an Ed25519 keypair (needs [crypto])")
     pk.set_defaults(func=_cmd_keygen)
 
-    pr = sub.add_parser("run", help="run the stdio proxy")
+    pr = sub.add_parser("run", help="run the stdio proxy",
+                        epilog="Monitor mode: " + MONITOR_WARNING)
     pr.add_argument("--policy", required=True)
     pr.add_argument("--audit", required=True)
     pr.add_argument("--fail", choices=["open", "closed"], default="closed")
     pr.add_argument("--secret", help="identity HMAC secret (symmetric; dev)")
     pr.add_argument("--pubkey", help="Ed25519 public key hex (asymmetric; recommended)")
     pr.add_argument("--session", default="stdio-session")
+    pr.add_argument("--mode", choices=["enforce", "monitor"], default="enforce",
+                    help="enforce (default) blocks per policy; monitor only records "
+                         "what WOULD happen and blocks NOTHING (test environments only)")
+    pr.add_argument(MONITOR_CONFIRM_FLAG, action="store_true",
+                    help="required with --mode monitor: confirms you accept that "
+                         "no call is blocked or changed")
     pr.add_argument("upstream", nargs=argparse.REMAINDER,
                     help="-- then the upstream server command")
     pr.set_defaults(func=_cmd_run)
