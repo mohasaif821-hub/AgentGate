@@ -15,7 +15,11 @@ that fired. Finally it verifies the audit log's hash chain.
 
 Least privilege by identity: it runs as reader-agent (Claude Desktop's token),
 then as admin-agent (from keys/tokens.json), and checks that AgentGate refuses
-to start with no token, a forged token or an expired token.
+to start with no token, a forged, expired, too-long-lived or old-format token.
+
+Tokens during a session: a token that expires, or is revoked, stops working on
+the very next request. A tampered, rolled-back or missing revocation list makes
+AgentGate refuse to start. Every change to the demo folder is put back.
 
 If every line says PASS, the same setup should work from Claude Desktop.
 """
@@ -30,6 +34,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # for mcpgate
@@ -124,8 +129,9 @@ def main() -> int:
         return 1
     cfg = json.loads(snippet.read_text(encoding="utf-8"))["mcpServers"]["agentgate-demo"]
     tokens_file = root / "keys" / "tokens.json"
-    if "MCPGATE_AGENT_TOKEN" not in cfg.get("env", {}) or not tokens_file.exists():
-        print("This demo folder predates agent identities: run demo_setup.py again.")
+    if "MCPGATE_AGENT_TOKEN" not in cfg.get("env", {}) or not tokens_file.exists() \
+            or "--revocation-list" not in cfg["args"]:
+        print("This demo folder is from an older version: run demo_setup.py again.")
         return 1
     tokens = json.loads(tokens_file.read_text(encoding="utf-8"))
 
@@ -205,14 +211,80 @@ def main() -> int:
     no_token = dict(cfg, env={k: v for k, v in cfg["env"].items() if k != "MCPGATE_AGENT_TOKEN"})
     check("no token: AgentGate refuses to start", refuses_to_start(no_token))
     check("forged token: AgentGate refuses to start", refuses_to_start(with_token(cfg, forged_token())))
-    expired = with_option(cfg, "--token-max-age", "0")
-    check("expired token: AgentGate refuses to start", refuses_to_start(expired))
+    signer = demo_signer(root)
+    expired = signer.sign("reader-agent", ["reader"], issued_at=time.time() - 7200,
+                          ttl_seconds=3600)
+    check("expired token: AgentGate refuses to start", refuses_to_start(with_token(cfg, expired)))
+    too_long = signer.sign("admin-agent", ["reader", "admin"], ttl_seconds=365 * 86400)
+    check("token living longer than the allowed maximum: refuses to start",
+          refuses_to_start(with_token(cfg, too_long)))
+    check("old-format token without expiry/id: refuses to start",
+          refuses_to_start(with_token(cfg, old_format_token(signer))))
 
-    # ---- 4. evidence -----------------------------------------------------------
+    # ---- 4. tokens re-checked on EVERY request ---------------------------------
+    notes = str(ws / "notes.txt")
+    client = Client(with_token(cfg, signer.sign("reader-agent", ["reader"], ttl_seconds=4)))
+    try:
+        handshake(client)
+        r = client.call("read_file", notes)
+        check("short token: allowed while valid", tool_ok(r), json.dumps(r)[:200])
+        time.sleep(5)
+        r = client.call("read_file", notes)
+        check("short token: refused on the next request after it expires",
+              denied_by_agentgate(r), json.dumps(r)[:200])
+    finally:
+        stderr += client.close()
+
+    rev_list = Path(option(cfg, "--revocation-list"))
+    list_before = rev_list.read_text(encoding="utf-8")
+    temp_token = signer.sign("reader-agent", ["reader"])
+    client = Client(with_token(cfg, temp_token))
+    try:
+        handshake(client)
+        r = client.call("read_file", notes)
+        check("revocation: allowed before revoking", tool_ok(r), json.dumps(r)[:200])
+        rv = subprocess.run([cfg["command"], "-m", "mcpgate.cli", "revoke",
+                             "--list", str(rev_list),
+                             "--private-key-file", str(root / "keys" / "agentgate_private_key.hex"),
+                             "--token", temp_token],
+                            capture_output=True, text=True, env={**os.environ, **cfg["env"]})
+        check("revoke command signs a new list version", rv.returncode == 0, rv.stdout + rv.stderr)
+        r = client.call("read_file", notes)
+        check("revocation: refused on the next request in the SAME session",
+              denied_by_agentgate(r), json.dumps(r)[:200])
+    finally:
+        stderr += client.close()
+    client = Client(cfg)
+    try:
+        handshake(client)
+        r = client.call("read_file", notes)
+        check("revoking one token leaves Claude Desktop's token working", tool_ok(r),
+              json.dumps(r)[:200])
+    finally:
+        stderr += client.close()
+
+    # ---- 5. the revocation list itself must be trustworthy ---------------------
+    list_now = rev_list.read_text(encoding="utf-8")
+    try:
+        doc = json.loads(list_now)
+        doc["revoked"] = []  # "un-revoke" the stolen token, keeping the signature
+        rev_list.write_text(json.dumps(doc), encoding="utf-8")
+        check("edited revocation list (signature broken): refuses to start",
+              refuses_to_start(cfg))
+        rev_list.write_text(list_before, encoding="utf-8")
+        check("older signed list put back (rollback): refuses to start",
+              refuses_to_start(cfg))
+        rev_list.unlink()
+        check("missing revocation list: refuses to start", refuses_to_start(cfg))
+    finally:
+        rev_list.write_text(list_now, encoding="utf-8")
+
+    # ---- 6. evidence -----------------------------------------------------------
     reached = read_log(server_log)[seen_before:]
     reached_desc = [(e["tool"], Path(e["path"]).name) for e in reached]
     check("only allowed calls reached the tool server", reached_desc == [
         ("list_files", "workspace"), ("read_file", "notes.txt"), ("delete_file", "report.txt"),
+        ("read_file", "notes.txt"), ("read_file", "notes.txt"), ("read_file", "notes.txt"),
     ], str(reached_desc))
 
     audited = [(e["agent_id"], e["tool"], e["decision"]["effect"], e["decision"]["rule_id"])
@@ -225,6 +297,11 @@ def main() -> int:
         ("reader-agent", "delete_file", "deny", "__default__"),
         ("admin-agent", "delete_file", "allow", "admin-delete-workspace"),
         ("admin-agent", "delete_file", "deny", "__default__"),
+        ("reader-agent", "read_file", "allow", "read-workspace"),
+        ("reader-agent", "read_file", "deny", "__identity__"),     # expired
+        ("reader-agent", "read_file", "allow", "read-workspace"),
+        ("reader-agent", "read_file", "deny", "__identity__"),     # revoked
+        ("reader-agent", "read_file", "allow", "read-workspace"),
     ], str(audited))
 
     verify = subprocess.run(
@@ -262,6 +339,25 @@ def with_option(cfg: dict, name: str, value: str) -> dict:
         args.insert(args.index("run") + 1, value)
         args.insert(args.index("run") + 1, name)
     return dict(cfg, args=args)
+
+
+def option(cfg: dict, name: str) -> str:
+    args = cfg["args"]
+    return args[args.index(name) + 1]
+
+
+def demo_signer(root: Path):
+    from mcpgate.identity import Ed25519Signer
+    key = (root / "keys" / "agentgate_private_key.hex").read_text(encoding="utf-8").strip()
+    return Ed25519Signer(bytes.fromhex(key))
+
+
+def old_format_token(signer) -> str:
+    """A token in the pre-AgentGate format: correctly signed, but no exp/jti."""
+    raw = json.dumps({"agent_id": "admin-agent", "roles": ["admin", "reader"],
+                      "issued_at": time.time(), "claims": {}},
+                     separators=(",", ":"), sort_keys=True).encode()
+    return f"{raw.hex()}.ed25519.{signer.sign_bytes(raw)}"
 
 
 def forged_token() -> str:

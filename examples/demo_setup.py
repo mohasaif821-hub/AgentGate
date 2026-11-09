@@ -17,6 +17,9 @@ It creates a demo folder (default: <your home>/AgentGateDemo) with:
 
     keys/agentgate_private_key.hex   signs agent identity tokens (keep private)
     keys/tokens.json                 one signed token per demo agent
+    revocation/revoked_tokens.json   signed list of revoked token ids
+    state/revocation_trusted_version.json   last trusted list version
+                                     (kept apart from the list: refuses rollback)
 
 and prints the block to paste into Claude Desktop's config file.
 
@@ -24,6 +27,8 @@ Least privilege by identity (AgentGate):
     reader-agent   roles: reader          list + read inside the workspace
     admin-agent    roles: reader, admin   the same, plus delete inside it
     anonymous      (no token)             AgentGate refuses to start
+Tokens carry a signed expiry and id. AgentGate re-checks the token and the
+revocation list before EVERY request.
 Claude Desktop gets the READER token: the agent you use every day holds the
 least privilege. The admin token is only used by demo_check.py.
 
@@ -57,6 +62,7 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
 TOKEN_MAX_AGE_SECONDS = 30 * 24 * 3600  # 30 days for the demo; default is 1 hour
+# AgentGate refuses any token whose lifetime is longer than this.
 AGENTS = {
     "reader-agent": ["reader"],
     "admin-agent": ["reader", "admin"],
@@ -95,8 +101,10 @@ def main() -> int:
         print(f"Could not create signing keys ({exc}).")
         print("Install the package first:  python -m pip install cryptography")
         return 1
-    tokens = {agent: signer.sign(agent, roles) for agent, roles in AGENTS.items()}
+    tokens = {agent: signer.sign(agent, roles, ttl_seconds=TOKEN_MAX_AGE_SECONDS)
+              for agent, roles in AGENTS.items()}
     write(root / "keys" / "tokens.json", json.dumps(tokens, indent=2) + "\n")
+    revocation_list, revocation_state = ensure_revocation_list(root, signer)
 
     write(ws / "notes.txt", "Team notes: the quarterly review is on Sunday.\n")
     write(ws / "report.txt", "Quarterly report draft. Revenue figures to be added.\n")
@@ -145,6 +153,8 @@ def main() -> int:
             "--audit", str(root / "audit.jsonl"),
             "--pubkey", signer.public_key_hex(),
             "--token-max-age", str(TOKEN_MAX_AGE_SECONDS),
+            "--revocation-list", str(revocation_list),
+            "--revocation-state", str(revocation_state),
             "--",
             sys.executable, str(REPO / "examples" / "demo_server.py"),
             "--root", str(root),
@@ -167,6 +177,7 @@ def main() -> int:
     print("Claude Desktop runs as: reader-agent (roles: reader)")
     print(f"Workspace (agent may read): {ws}")
     print(f"Fake secret (must stay blocked): {secret}")
+    print(f"Revocation list: {revocation_list}")
     print()
     if args.install_claude_config:
         print(f"Claude Desktop config updated: {installed[0]}")
@@ -178,6 +189,28 @@ def main() -> int:
     print()
     print(snippet)
     return 0
+
+
+def ensure_revocation_list(root: Path, signer) -> tuple[Path, Path]:
+    """Keep a valid signed list; otherwise write a fresh one with a NEWER version
+    than the last trusted one, so AgentGate does not see it as a rollback."""
+    from mcpgate.identity import IdentityError
+    from mcpgate.revocation import build_list, parse_list, write_atomic
+    lst = root / "revocation" / "revoked_tokens.json"
+    state = root / "state" / "revocation_trusted_version.json"
+    try:
+        parse_list(lst.read_text(encoding="utf-8"), signer.verifier())
+        return lst, state
+    except (OSError, IdentityError):
+        pass
+    trusted = 0
+    try:
+        trusted = int(json.loads(state.read_text(encoding="utf-8"))["trusted_version"])
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    doc = build_list(signer, trusted + 1, [])
+    write_atomic(lst, json.dumps(doc, indent=2) + "\n")
+    return lst, state
 
 
 def _private_hex(signer) -> str:
