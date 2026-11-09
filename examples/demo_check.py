@@ -21,6 +21,12 @@ Tokens during a session: a token that expires, or is revoked, stops working on
 the very next request. A tampered, rolled-back or missing revocation list makes
 AgentGate refuse to start. Every change to the demo folder is put back.
 
+Human approval: reading workspace/confidential needs approval. The check plays
+the human by signing decisions with the demo's approval key, and shows that an
+approval runs one exact request once; that a rejection, a forged decision, a
+changed request or a too-late retry runs nothing; and that at most 3 approvals
+can wait per agent. (The approval page itself is covered by the unit tests.)
+
 If every line says PASS, the same setup should work from Claude Desktop.
 """
 
@@ -130,7 +136,7 @@ def main() -> int:
     cfg = json.loads(snippet.read_text(encoding="utf-8"))["mcpServers"]["agentgate-demo"]
     tokens_file = root / "keys" / "tokens.json"
     if "MCPGATE_AGENT_TOKEN" not in cfg.get("env", {}) or not tokens_file.exists() \
-            or "--revocation-list" not in cfg["args"]:
+            or "--revocation-list" not in cfg["args"] or "--approval-queue" not in cfg["args"]:
         print("This demo folder is from an older version: run demo_setup.py again.")
         return 1
     tokens = json.loads(tokens_file.read_text(encoding="utf-8"))
@@ -304,6 +310,8 @@ def main() -> int:
         ("reader-agent", "read_file", "allow", "read-workspace"),
     ], str(audited))
 
+    stderr += approval_checks(root, cfg)
+
     verify = subprocess.run(
         [cfg["command"], "-m", "mcpgate.cli", "verify", "--audit", str(audit_log)],
         capture_output=True, text=True, env={**os.environ, **cfg.get("env", {})})
@@ -314,6 +322,134 @@ def main() -> int:
     if FAILED:
         print("\nAgentGate stderr (for troubleshooting):\n" + stderr[-2000:])
     return 1 if FAILED else 0
+
+
+PENDING = {"code": -32002, "message": "AgentGate: request requires human approval. "
+                                     "Retry the same request after it is approved."}
+
+
+class Human(threading.Thread):
+    """Plays the person at the approval page: signs the next new request."""
+
+    def __init__(self, root: Path, verdict: str, key_hex: str | None = None,
+                 skip: set[str] | None = None) -> None:
+        super().__init__(daemon=True)
+        from mcpgate.approval import sign_decision
+        from mcpgate.identity import Ed25519Signer
+        key = key_hex or (root / "keys" / "approver_private_key.hex").read_text(encoding="utf-8").strip()
+        self.signer, self.sign = Ed25519Signer(bytes.fromhex(key)), sign_decision
+        self.queue, self.verdict, self.skip = root / "approvals", verdict, set(skip or ())
+        self.done = threading.Event()
+        self.start()
+
+    def run(self) -> None:
+        from mcpgate.approval import write_json_atomic
+        end = time.time() + 20
+        while time.time() < end:
+            for f in sorted((self.queue / "pending").glob("*.json")):
+                if f.stem in self.skip:
+                    continue
+                try:
+                    req = json.loads(f.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    continue
+                write_json_atomic(self.queue / "decisions" / f.name, self.sign(
+                    self.signer, approval_id=req["approval_id"], req_hash=req["request_hash"],
+                    decision=self.verdict, approver_id="demo-check"))
+                self.done.set()
+                return
+            time.sleep(0.1)
+
+
+def pending_ids(root: Path) -> set[str]:
+    return {f.stem for f in (root / "approvals" / "pending").glob("*.json")}
+
+
+def approval_checks(root: Path, cfg: dict) -> str:
+    ws = root / "workspace"
+    salaries = str(ws / "confidential" / "salaries.txt")
+    server_log, audit_log = root / "server_received.log", root / "audit.jsonl"
+    seen_before, audited_before = len(read_log(server_log)), len(read_log(audit_log))
+    short = with_option(with_option(cfg, "--approval-hold", "3"), "--approval-ttl", "30")
+    err = ""
+
+    client = Client(short)
+    try:
+        handshake(client)
+        Human(root, "approve")
+        r = client.call("read_file", salaries)
+        check("approval: approved during the hold, the held request runs",
+              tool_ok(r) and "FAKE CONFIDENTIAL" in text_of(r), json.dumps(r)[:200])
+        Human(root, "reject")
+        r = client.call("read_file", salaries)
+        check("approval: rejected request is refused", denied_by_agentgate(r), json.dumps(r)[:200])
+
+        r = client.call("read_file", salaries)          # nobody answers in time
+        check("approval: no answer in time -> agent told to retry, nothing ran",
+              r.get("error") == PENDING, json.dumps(r)[:200])
+        Human(root, "approve").done.wait(5)
+        r = client.call("read_file", salaries)
+        check("approval: approved later, the IDENTICAL retry runs",
+              tool_ok(r) and "FAKE CONFIDENTIAL" in text_of(r), json.dumps(r)[:200])
+        r = client.call("read_file", salaries)
+        check("approval: used once (the same request again needs a new approval)",
+              r.get("error") == PENDING, json.dumps(r)[:200])
+
+        Human(root, "approve").done.wait(5)             # approves that waiting request
+        # Same file, different text: pathlib would drop the "." so build it by hand.
+        changed = str(ws / "confidential") + os.sep + "." + os.sep + "salaries.txt"
+        assert changed != salaries
+        r = client.call("read_file", changed)
+        check("approval: a changed request does not use the approval",
+              r.get("error") == PENDING, json.dumps(r)[:200])
+    finally:
+        err += client.close()
+
+    from mcpgate.identity import Ed25519Signer
+    other_key = Ed25519Signer.generate()
+    client = Client(short)
+    try:
+        handshake(client)
+        Human(root, "approve", key_hex=_hex(other_key))
+        r = client.call("read_file", salaries)
+        check("approval: decision signed with another key runs nothing",
+              r.get("error") == PENDING, json.dumps(r)[:200])
+    finally:
+        err += client.close()
+
+    client = Client(with_option(short, "--approval-hold", "1"))
+    try:
+        handshake(client)
+        answers = [client.call("read_file", str(ws / "confidential" / f"f{i}.txt")) for i in range(4)]
+        check("approval: at most 3 requests can wait per agent",
+              [a.get("error") == PENDING for a in answers[:3]] == [True] * 3
+              and denied_by_agentgate(answers[3]), json.dumps(answers[3])[:200])
+    finally:
+        err += client.close()
+
+    reached = [(e["tool"], Path(e["path"]).name) for e in read_log(server_log)[seen_before:]]
+    check("approval: only the two approved reads reached the tool server",
+          reached == [("read_file", "salaries.txt")] * 2, str(reached))
+    events = [e["decision"]["obligations"].get("approval_event")
+              for e in read_log(audit_log)[audited_before:]
+              if "approval_event" in e["decision"].get("obligations", {})]
+    check("approval: every step is in the audit log", events == [
+        "requested", "approved_executed",
+        "requested", "rejected",
+        "requested", "hold_timeout", "approved_executed",
+        "requested", "hold_timeout",
+        "requested", "hold_timeout",
+        "requested", "invalid_decision_ignored", "hold_timeout",
+        "requested", "hold_timeout", "requested", "hold_timeout",
+        "requested", "hold_timeout", "too_many_pending",
+    ], str(events))
+    return err
+
+
+def _hex(signer) -> str:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from demo_setup import _private_hex
+    return _private_hex(signer)
 
 
 def handshake(client: Client) -> None:
