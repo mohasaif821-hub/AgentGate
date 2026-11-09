@@ -202,7 +202,10 @@ def _make_handler(svc: ApproverService):
             self.send_header("Content-Security-Policy", CSP)
             self.send_header("X-Frame-Options", "DENY")
             self.send_header("X-Content-Type-Options", "nosniff")
-            self.send_header("Referrer-Policy", "no-referrer")
+            # "same-origin", NOT "no-referrer": with no-referrer, browsers send
+            # "Origin: null" on form POSTs and the Origin check would refuse
+            # every login (found with a real browser).
+            self.send_header("Referrer-Policy", "same-origin")
             self.send_header("Cache-Control", "no-store")
             for k, v in (extra or {}).items():
                 self.send_header(k, v)
