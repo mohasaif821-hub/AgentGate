@@ -280,7 +280,31 @@ denied by default and hidden from that agent's tool list.
 - **No valid identity, no start.** When `--pubkey` or `--secret` is set, the
   proxy refuses to start if `MCPGATE_AGENT_TOKEN` is missing, forged or
   expired (exit code 3). It never falls back to running as "anonymous".
-- **Token age is configurable:** `--token-max-age SECONDS` (default 3600).
+- **Signed expiry and id.** Each token carries `iat`, `exp` and a unique `jti`
+  inside the signed bytes, so its life can't be extended or its id changed
+  without a new signature. Tokens without them (older format) are refused.
+- **Times must make sense.** A token issued in the future (beyond 60 s of
+  clock skew), one that expires before it was issued, or one whose lifetime
+  (`exp - iat`) is longer than `--token-max-age SECONDS` (default 3600) is
+  refused, so the issuer can't get past the limit with odd timestamps.
+- **Checked on every request**, not just at start: signature, expiry and
+  revocation. A token that expires or is revoked mid-session is refused on the
+  next request, and the refusal is audited with rule `__identity__`. Identity
+  is enforced in monitor mode too.
+- **Revocation by token id:** `--revocation-list FILE --revocation-state FILE`.
+  The list is signed with the token signing key and names revoked `jti`s, so
+  revoking one token leaves the agent's other tokens working. A missing,
+  unreadable, edited or wrongly signed list means every request is refused.
+  Rotating the key stays the emergency option, not the daily one.
+
+  ```bash
+  mcp-gate revoke --list revoked.json --private-key-file key.hex --init
+  mcp-gate revoke --list revoked.json --private-key-file key.hex --token <TOKEN>
+  ```
+- **Rollback refused.** The version number in the list alone can't stop someone
+  putting back an older signed list, so the last trusted version is also kept
+  in the separate `--revocation-state` file (and in memory) and any older list
+  is refused.
 - **`check` warns about broad grants:** any non-deny rule that applies to every
   agent (`agents: ["*"]` with no `require_roles`) is printed as a
   `WARNING`. It is a warning, not an error: the exit code stays 0.
@@ -299,8 +323,15 @@ missing, forged and expired token cases.
 **Limits.** The proxy holds only the public key, so editing Claude Desktop's
 config cannot *mint* a token with more roles. But a token is a bearer token:
 anyone who can read an existing token (for example the admin token in the demo's
-`keys/` folder) can *copy* it until it expires. Keep tokens and the private key
-readable only by the user who needs them, and keep `--token-max-age` short.
+`keys/` folder) can *copy* it until it expires or is revoked. Keep tokens and
+the private key readable only by the user who needs them, and keep
+`--token-max-age` short.
+
+The signed list stops **unsigned** changes. It does not resist an attacker who
+already has the rights of the account or machine running AgentGate: on a
+single Windows account, such an attacker can change the state file and the
+list together, change the clock, or read the private key. Real separation
+needs a different OS account or another machine.
 
 ---
 
