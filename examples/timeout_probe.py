@@ -5,8 +5,10 @@ probe answers two questions before that is designed:
 
   1. How long does Claude Desktop wait for a tool reply before giving up?
   2. When it gives up, does it tell the server (notifications/cancelled)?
+  3. How does Claude show an error reply, depending on its code? (reply_error)
 
-It is a tiny MCP server with ONE tool, wait_seconds, that only sleeps. It
+It is a tiny MCP server with two tools: wait_seconds only sleeps, and
+reply_error only answers with an error of a chosen kind. It
 reads and writes no files except its own log. It is NOT part of AgentGate and
 does not go through it.
 
@@ -41,6 +43,25 @@ TOOL = {
         "type": "object",
         "properties": {"seconds": {"type": "number", "description": f"1 to {MAX_WAIT}"}},
         "required": ["seconds"],
+    },
+}
+
+
+# reply_error kinds: the codes AgentGate uses today, a code outside the
+# JSON-RPC reserved range, and a tool result marked isError.
+ERROR_KINDS = {
+    "code_32001": -32001,
+    "code_32002": -32002,
+    "code_31002": -31002,
+    "tool_result": None,
+}
+ERROR_TOOL = {
+    "name": "reply_error",
+    "description": "Test tool: replies with a test error of the given kind. Touches nothing.",
+    "inputSchema": {
+        "type": "object",
+        "properties": {"kind": {"type": "string", "enum": sorted(ERROR_KINDS)}},
+        "required": ["kind"],
     },
 }
 
@@ -83,7 +104,20 @@ class Probe:
                 "capabilities": {"tools": {}},
                 "serverInfo": {"name": NAME, "version": "1"}}})
         elif method == "tools/list":
-            self.send({"jsonrpc": "2.0", "id": msg_id, "result": {"tools": [TOOL]}})
+            self.send({"jsonrpc": "2.0", "id": msg_id, "result": {"tools": [TOOL, ERROR_TOOL]}})
+        elif method == "tools/call" and (msg.get("params") or {}).get("name") == "reply_error":
+            kind = ((msg.get("params") or {}).get("arguments") or {}).get("kind")
+            text = f"AgentGate test message ({kind}): please retry the same request later."
+            self.log("reply_error", id=msg_id, kind=kind)
+            if kind not in ERROR_KINDS:
+                self.send({"jsonrpc": "2.0", "id": msg_id, "result": {
+                    "content": [{"type": "text", "text": "unknown kind"}], "isError": True}})
+            elif ERROR_KINDS[kind] is None:
+                self.send({"jsonrpc": "2.0", "id": msg_id, "result": {
+                    "content": [{"type": "text", "text": text}], "isError": True}})
+            else:
+                self.send({"jsonrpc": "2.0", "id": msg_id,
+                           "error": {"code": ERROR_KINDS[kind], "message": text}})
         elif method == "tools/call":
             args = (msg.get("params") or {}).get("arguments") or {}
             try:
