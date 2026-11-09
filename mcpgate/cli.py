@@ -93,11 +93,26 @@ def _cmd_dashboard(args: argparse.Namespace) -> int:
 
 
 def _cmd_controls(args: argparse.Namespace) -> int:
-    from .compliance import render_markdown_table, coverage_summary
-    print(render_markdown_table())
-    cov = coverage_summary()
-    print("\nOWASP ASI addressed:", ", ".join(cov["owasp_asi_addressed"]))
-    print("NCCoE pillars addressed:", ", ".join(cov["nccoe_pillars_addressed"]))
+    from .regulatory import render_markdown, render_text
+    fw = None if args.framework == "all" else args.framework
+    if args.format == "markdown":
+        if args.out:  # write UTF-8 directly (PowerShell's ">" would write UTF-16)
+            from pathlib import Path
+            Path(args.out).write_text(render_markdown(fw) + "\n", encoding="utf-8")
+            print(f"wrote {args.out}")
+        else:
+            print(render_markdown(fw))
+        return 0
+    if fw is None:
+        from .compliance import render_markdown_table, coverage_summary
+        print("NIST / NCCoE / OWASP map inherited from mcp-gate (not re-verified by AgentGate):")
+        print(render_markdown_table())
+        cov = coverage_summary()
+        print("\nOWASP ASI addressed:", ", ".join(cov["owasp_asi_addressed"]))
+        print("NCCoE pillars addressed:", ", ".join(cov["nccoe_pillars_addressed"]))
+        print("\nAgentGate regulatory mapping (NCA / SAMA / OWASP), checked against official sources:")
+    print(render_text(fw))
+    print("\nAgentGate SUPPORTS these controls; it does not make an organisation compliant.")
     return 0
 
 
@@ -350,7 +365,11 @@ def build_parser() -> argparse.ArgumentParser:
     pdb.add_argument("--lang", choices=["en", "ar"], default="en")
     pdb.set_defaults(func=_cmd_dashboard)
 
-    pctl = sub.add_parser("controls", help="print the NIST/OWASP control mapping")
+    pctl = sub.add_parser("controls", help="print the control mappings (NIST/OWASP, and "
+                          "AgentGate's NCA/SAMA/OWASP mapping)")
+    pctl.add_argument("--framework", choices=["all", "NCA", "SAMA", "OWASP"], default="all")
+    pctl.add_argument("--format", choices=["text", "markdown"], default="text")
+    pctl.add_argument("--out", help="with --format markdown: write to this file (UTF-8)")
     pctl.set_defaults(func=_cmd_controls)
 
     pt = sub.add_parser("token", help="mint an agent identity token")
