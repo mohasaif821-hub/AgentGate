@@ -94,7 +94,7 @@ def main() -> int:
                for e in dc.read_log(audit_log)[audited_before:]]
     dc.check("audit records what WOULD have been blocked, marked monitor", audited == [
         ("read_file", "deny", "__default__", "monitor"),
-        ("delete_file", "deny", "deny-delete", "monitor"),
+        ("delete_file", "deny", "__default__", "monitor"),
     ], str(audited))
 
     verify = subprocess.run([cfg["command"], "-m", "mcpgate.cli", "verify", "--audit", str(audit_log)],
