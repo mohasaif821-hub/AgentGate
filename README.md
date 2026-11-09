@@ -333,6 +333,50 @@ single Windows account, such an attacker can change the state file and the
 list together, change the clock, or read the private key. Real separation
 needs a different OS account or another machine.
 
+
+### Human approval bound to one request (AgentGate)
+
+A rule with `effect: require_approval` holds the call until a person decides.
+
+- **One exact request.** The approval covers a fingerprint of the agent, its
+  token id, the tool, the exact arguments and the policy version. Any change
+  (one character, another token) is a different request.
+- **Used once, no new permissions.** An approval runs that request once and is
+  gone. It never changes what the agent may do.
+- **Nothing runs before a valid, signed approval.** The decision is signed by
+  a separate approval service with its own key. AgentGate holds only that
+  public key (`--approver-pubkey`), which must differ from the token key.
+- **Hold, then pending.** AgentGate holds the call (`--approval-hold`, default
+  45 s). We measured that linked Claude sessions give up after 60 s *without
+  telling the server*, so the hold stays below that. If no one decides in time,
+  the agent gets `-32002 ... Retry the same request after it is approved.` and
+  the approval stays open for `--approval-ttl` (default 600 s, never renewed).
+  The identical retry then runs the frozen copy of the arguments, once.
+- **Checked again right before running:** identity, expiry, revocation, policy.
+- **At most `--max-pending` (default 3) waiting approvals per agent**, so a
+  flood of requests can't wear the person down.
+- **No network port in AgentGate.** It shares only a folder with the approval
+  service (`--approval-queue`). A forged decision fails its signature and is
+  audited; deleting files can only cause refusals. A restart voids all
+  pending approvals.
+- **Every step is audited** (`requested`, `approved_executed`, `rejected`,
+  `hold_timeout`, `expired`, `too_many_pending`, `invalid_decision_ignored`,
+  ...), with the request fingerprint and the approver id, never the secrets.
+
+The approval page (`mcp-gate approver --queue DIR --private-key-file KEY`)
+listens on `127.0.0.1` only, prints a one-time login code in its own terminal
+(5 wrong codes stop it), uses an HttpOnly SameSite=Strict session, checks the
+CSRF token, `Origin` and `Host` on every POST, escapes everything it shows,
+masks secret-looking argument values, forbids scripts and framing with a strict
+CSP, and recomputes each request's fingerprint so a request whose shown details
+were altered can't be approved.
+
+**Limits.** On a single Windows account, a process running as you (an agent
+with a terminal tool, say) could read the login code or the approval key file,
+or open the page. This is practical protection within our model, not full
+separation: that needs the approval service on another OS account or device.
+Masked values (passwords and the like) are not shown to the approver.
+
 ---
 
 ## Verification
