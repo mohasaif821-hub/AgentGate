@@ -37,6 +37,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -95,7 +96,16 @@ def write_atomic(path: Path, text: str) -> None:
         fh.write(text)
         fh.flush()
         os.fsync(fh.fileno())
-    os.replace(tmp, path)
+    # Windows refuses to replace a file another process has open for a moment
+    # (AgentGate reads these often), so retry briefly before giving up.
+    for attempt in range(20):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if attempt == 19:
+                raise
+            time.sleep(0.05)
 
 
 class RevocationChecker:

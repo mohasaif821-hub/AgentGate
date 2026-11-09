@@ -79,6 +79,17 @@ def blocked_response(request_id: Any) -> dict[str, Any]:
     return jsonrpc_error(request_id, POLICY_DENIED_CODE, BLOCKED_MESSAGE)
 
 
+# AgentGate: sent when a call is waiting for a human. It says only that
+# approval is needed and that the SAME request must be sent again: no rule,
+# no reason, no approval id.
+APPROVAL_PENDING_MESSAGE = ("AgentGate: request requires human approval. "
+                            "Retry the same request after it is approved.")
+
+
+def approval_pending_response(request_id: Any) -> dict[str, Any]:
+    return jsonrpc_error(request_id, APPROVAL_REQUIRED_CODE, APPROVAL_PENDING_MESSAGE)
+
+
 def build_denial_response(request_id: Any, decision: Decision) -> dict[str, Any]:
     if decision.effect is Effect.REQUIRE_APPROVAL:
         return jsonrpc_error(request_id, APPROVAL_REQUIRED_CODE, APPROVAL_MESSAGE)

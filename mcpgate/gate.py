@@ -23,6 +23,7 @@ from .decision import Decision, Effect
 from .engine import PolicyEngine
 from .enforce import (
     FailMode,
+    approval_pending_response,
     blocked_response,
     build_denial_response,
     jsonrpc_error,
@@ -46,6 +47,9 @@ class GateOutcome:
     forward_message: dict[str, Any] | None     # send upstream, or None
     response_to_agent: dict[str, Any] | None   # send back now, or None
     decision: Decision | None                  # None for ungoverned messages
+    # AgentGate: a call held for human approval (approval.Pending). The proxy
+    # waits for the decision on a worker thread; nothing is sent until then.
+    hold: Any = None
 
 
 # An approval hook lets you plug in human-in-the-loop. It receives the call
@@ -64,13 +68,17 @@ class Gate:
     def __init__(self, engine: PolicyEngine, audit: AuditLog, *,
                  fail_mode: FailMode = FailMode.CLOSED,
                  approval_hook: ApprovalHook | None = None,
-                 mode: str = ENFORCE) -> None:
+                 mode: str = ENFORCE,
+                 approvals: Any = None) -> None:
         if mode not in (ENFORCE, MONITOR):
             raise ValueError(f"unknown mode {mode!r}")
         self.engine = engine
         self.audit = audit
         self.fail_mode = fail_mode
         self.approval_hook = approval_hook or _default_approval_hook
+        # AgentGate: ApprovalManager (human approval bound to one request).
+        # When set it replaces the approval hook.
+        self.approvals = approvals
         # AgentGate monitor mode: every call is evaluated and audited, but
         # NOTHING is blocked, changed or held for approval. No protection.
         self.mode = mode
@@ -132,6 +140,26 @@ class Gate:
             self.engine.commit_budget(tool, arguments, decision, session_id)
             return GateOutcome(forward_message=new_msg,
                                response_to_agent=None, decision=decision)
+
+        if decision.effect is Effect.REQUIRE_APPROVAL and self.approvals is not None:
+            try:
+                res = self.approvals.on_request(message, tool, arguments, identity,
+                                                decision, session_id)
+            except Exception:
+                log.exception("approval handling failed; refusing the call")
+                return GateOutcome(forward_message=None,
+                                   response_to_agent=blocked_response(request_id),
+                                   decision=decision)
+            if res.forward is not None:
+                return GateOutcome(forward_message=res.forward,
+                                   response_to_agent=None, decision=decision)
+            if res.hold is not None:
+                return GateOutcome(forward_message=None, response_to_agent=None,
+                                   decision=decision, hold=res.hold)
+            response = (approval_pending_response(request_id) if res.respond == "pending"
+                        else blocked_response(request_id))
+            return GateOutcome(forward_message=None, response_to_agent=response,
+                               decision=decision)
 
         if decision.effect is Effect.REQUIRE_APPROVAL:
             approved = self.approval_hook(tool, arguments, identity, decision)

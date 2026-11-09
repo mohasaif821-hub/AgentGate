@@ -27,6 +27,8 @@ from .identity import issue_token
 from .policy import load_policy
 from .stdio_proxy import StdioProxy
 
+log = logging.getLogger("mcpgate")
+
 
 def _cmd_check(args: argparse.Namespace) -> int:
     try:
@@ -188,6 +190,37 @@ def _cmd_keygen(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_approver(args: argparse.Namespace) -> int:
+    """AgentGate: run the local approval page (in its own terminal)."""
+    from .approver import ApproverService
+    from .identity import Ed25519Signer
+    try:
+        key_hex = _private_key_hex(args)
+        if not key_hex:
+            raise ValueError("needs --private-key-file")
+        signer = Ed25519Signer(bytes.fromhex(key_hex))
+    except (OSError, ValueError) as exc:
+        print(f"approver failed: {exc}", file=sys.stderr)
+        return 1
+    try:
+        svc = ApproverService(args.queue, signer, approver_id=args.approver_id,
+                              port=args.port)
+    except OSError as exc:
+        print(f"approver failed: could not listen on 127.0.0.1:{args.port} ({exc})",
+              file=sys.stderr)
+        return 1
+    print("AgentGate approval service")
+    print(f"  open:        http://127.0.0.1:{svc.port}/")
+    print(f"  login code:  {svc.login_code}")
+    print(f"  approver id: {args.approver_id}")
+    print("Keep this window to yourself. Press Ctrl+C to stop.", flush=True)
+    try:
+        svc.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+
 MONITOR_WARNING = (
     "WARNING: AgentGate is in MONITOR mode. NO calls are blocked or changed.\n"
     "Use only in an isolated test environment with dummy data."
@@ -252,6 +285,30 @@ def _cmd_run(args: argparse.Namespace) -> int:
                   file=sys.stderr)
             return 3
 
+    if args.approval_queue or args.approver_pubkey:
+        if not (args.approval_queue and args.approver_pubkey):
+            print("refusing to start: --approval-queue and --approver-pubkey must be "
+                  "given together", file=sys.stderr)
+            return 1
+        if args.pubkey and args.approver_pubkey.strip().lower() == args.pubkey.strip().lower():
+            print("refusing to start: the approval key must differ from the token key",
+                  file=sys.stderr)
+            return 1
+        if args.approval_hold >= 55:
+            log.warning("--approval-hold %.0fs: linked Claude sessions were measured to "
+                        "give up after 60 s", args.approval_hold)
+        from .approval import ApprovalManager
+        from .identity import Ed25519Verifier
+        try:
+            approvals = ApprovalManager(
+                args.approval_queue, Ed25519Verifier.from_public_hex(args.approver_pubkey),
+                audit=audit, engine=engine, hold_seconds=args.approval_hold,
+                ttl_seconds=args.approval_ttl, max_pending=args.max_pending)
+        except Exception as exc:
+            print(f"refusing to start: approval setup failed: {exc}", file=sys.stderr)
+            return 1
+        gate.approvals = approvals
+
     proxy = StdioProxy(gate, args.upstream, verifier=verifier,
                        session_id=args.session,
                        max_age_seconds=args.token_max_age,
@@ -305,6 +362,14 @@ def build_parser() -> argparse.ArgumentParser:
     prv.add_argument("--init", action="store_true", help="create a new, empty list (version 1)")
     prv.set_defaults(func=_cmd_revoke)
 
+    pa = sub.add_parser("approver", help="AgentGate: run the local approval page")
+    pa.add_argument("--queue", required=True, help="folder shared with AgentGate")
+    pa.add_argument("--private-key-file", help="approval private key hex file")
+    pa.add_argument("--private-key", help=argparse.SUPPRESS)
+    pa.add_argument("--approver-id", default="operator")
+    pa.add_argument("--port", type=int, default=8765)
+    pa.set_defaults(func=_cmd_approver)
+
     pk = sub.add_parser("keygen", help="generate an Ed25519 keypair (needs [crypto])")
     pk.set_defaults(func=_cmd_keygen)
 
@@ -324,6 +389,16 @@ def build_parser() -> argparse.ArgumentParser:
                     "checked on every request")
     pr.add_argument("--revocation-state", help="AgentGate: file that remembers the last "
                     "trusted list version (refuses rollback); keep it apart from the list")
+    pr.add_argument("--approval-queue", help="AgentGate: folder shared with the approval "
+                    "service (enables human approval)")
+    pr.add_argument("--approver-pubkey", help="AgentGate: the approval service's Ed25519 "
+                    "public key (must differ from --pubkey)")
+    pr.add_argument("--approval-hold", type=float, default=45.0,
+                    help="seconds to hold a call waiting for a decision (default 45)")
+    pr.add_argument("--approval-ttl", type=float, default=600.0,
+                    help="seconds an undecided approval stays open (default 600)")
+    pr.add_argument("--max-pending", type=int, default=3,
+                    help="undecided approvals allowed per agent (default 3)")
     pr.add_argument("--mode", choices=["enforce", "monitor"], default="enforce",
                     help="enforce (default) blocks per policy; monitor only records "
                          "what WOULD happen and blocks NOTHING (test environments only)")

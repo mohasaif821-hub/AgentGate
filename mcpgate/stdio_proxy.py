@@ -76,6 +76,8 @@ class StdioProxy:
         self._pending_lock = threading.Lock()
         # client stdout is written from two threads; keep each message whole
         self._write_lock = threading.Lock()
+        # upstream stdin is written by the main thread and by approval holds
+        self._upstream_lock = threading.Lock()
 
     def _resolve_identity(self) -> AgentIdentity:
         """Who is this agent?
@@ -206,6 +208,13 @@ class StdioProxy:
 
         outcome = self.gate.handle_request(message, identity, self.session_id)
 
+        if outcome.hold is not None:
+            # Held for human approval: wait on a worker thread so other
+            # requests keep flowing. Nothing is sent until there is a decision.
+            threading.Thread(target=self._finish_hold, args=(outcome.hold, upstream_out),
+                             daemon=True).start()
+            return
+
         if outcome.response_to_agent is not None:
             # Denied/approval-rejected/fail-closed: answer the client directly.
             self._write_client(outcome.response_to_agent)
@@ -215,10 +224,38 @@ class StdioProxy:
                     and message.get("id") is not None):
                 with self._pending_lock:
                     self._pending_lists.add(_id_key(message["id"]))
-            data = (json.dumps(outcome.forward_message,
-                               separators=(",", ":")) + "\n").encode()
+            self._write_upstream(outcome.forward_message, upstream_out)
+
+    def _write_upstream(self, msg: dict[str, Any], upstream_out: Any) -> None:
+        data = (json.dumps(msg, separators=(",", ":")) + "\n").encode()
+        with self._upstream_lock:
             upstream_out.write(data)
             upstream_out.flush()
+
+    def _finish_hold(self, hold: Any, upstream_out: Any) -> None:
+        """AgentGate: wait for the human, then run the frozen copy or answer."""
+        from .approval import APPROVE
+        from .enforce import approval_pending_response
+        mgr = self.gate.approvals
+        request_id = hold.message.get("id")
+        try:
+            verdict, approver = mgr.wait_for_decision(hold, self._identity)
+            # identity, expiry and revocation are checked again right before running
+            problem = self._identity_problem() if verdict == APPROVE else None
+            if problem is not None:
+                self._audit_identity_refusal(hold.message, problem)
+            res = mgr.resolve_hold(hold, self._identity, verdict, approver, problem)
+        except Exception:
+            log.exception("approval hold failed; refusing the call")
+            hold.hold_done.set()
+            self._write_client(blocked_response(request_id))
+            return
+        if res.forward is not None:
+            self._write_upstream(res.forward, upstream_out)
+        elif res.respond == "pending":
+            self._write_client(approval_pending_response(request_id))
+        else:
+            self._write_client(blocked_response(request_id))
 
     def _pump_upstream_to_client(self) -> None:
         assert self._proc and self._proc.stdout
