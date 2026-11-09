@@ -100,7 +100,7 @@ class Client:
         return self.proc.stderr.read().decode("utf-8", errors="replace")
 
 
-BLOCKED = {"code": -32001, "message": "AgentGate: request blocked by policy"}
+BLOCKED = {"code": -31901, "message": "AgentGate: request blocked by policy"}
 
 
 def denied_by_agentgate(reply: dict) -> bool:
@@ -324,7 +324,7 @@ def main() -> int:
     return 1 if FAILED else 0
 
 
-PENDING = {"code": -32002, "message": "AgentGate: request requires human approval. "
+PENDING = {"code": -31902, "message": "AgentGate: request requires human approval. "
                                      "Retry the same request after it is approved."}
 
 
