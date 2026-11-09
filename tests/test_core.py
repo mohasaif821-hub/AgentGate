@@ -1713,6 +1713,57 @@ def test_dashboard_empty_log():
     assert "No records yet." in page
 
 
+# ---- AgentGate: regulatory mapping -----------------------------------------
+
+def test_regulatory_mapping_statuses_are_consistent():
+    from mcpgate.regulatory import MAPPINGS, SUPPORT, VERIFICATION, SOURCES
+    for m in MAPPINGS:
+        assert m.framework in SOURCES and m.status in SUPPORT and m.verification in VERIFICATION, m
+        if m.status == "Not Supported":
+            assert m.verification == "Missing" and not (m.tests or m.scenarios), m.control
+        elif m.status == "Not Verified":
+            assert m.verification == "Pending", m.control
+        else:
+            assert m.verification == "Verified" and (m.tests or m.scenarios or m.files), m.control
+        assert m.limits.strip(), m.control      # every claim states what it does NOT cover
+    assert not any(m.status == "Supported" for m in MAPPINGS if m.framework in ("NCA", "SAMA"))
+
+
+def test_regulatory_evidence_exists():
+    import importlib.util, sys as _sys
+    from pathlib import Path
+    from mcpgate.regulatory import MAPPINGS
+    repo = Path(__file__).resolve().parent.parent
+    spec = importlib.util.spec_from_file_location("scen", repo / "evaluation" / "scenarios.py")
+    scen = importlib.util.module_from_spec(spec); spec.loader.exec_module(scen)
+    ids = {s["id"] for s in scen.SCENARIOS}
+    here = _sys.modules[__name__].__dict__
+    for m in MAPPINGS:
+        for t in m.tests:
+            assert callable(here.get(t)), f"{m.control}: test {t} does not exist"
+        for sid in m.scenarios:
+            assert sid in ids, f"{m.control}: scenario {sid} does not exist"
+        for f in m.files:
+            assert (repo / f).exists(), f"{m.control}: file {f} does not exist"
+
+
+def test_regulatory_doc_matches_data():
+    from pathlib import Path
+    from mcpgate.regulatory import render_markdown
+    doc = Path(__file__).resolve().parent.parent / "docs" / "regulatory-mapping.md"
+    assert doc.read_text(encoding="utf-8") == render_markdown() + "\n", \
+        "docs/regulatory-mapping.md is out of date: regenerate it with " \
+        "`python -m mcpgate.cli controls --format markdown --out docs/regulatory-mapping.md`"
+
+
+def test_regulatory_wording_makes_no_compliance_claim():
+    from mcpgate.regulatory import render_markdown
+    text = render_markdown().lower()
+    for claim in ("complies with", "is compliant", "fully compliant", "prevents prompt injection",
+                  "ac-06", "ac-6"):
+        assert claim not in text, claim
+
+
 # ---- runner ----------------------------------------------------------------
 
 def _run_all():
