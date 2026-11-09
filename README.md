@@ -349,7 +349,7 @@ A rule with `effect: require_approval` holds the call until a person decides.
 - **Hold, then pending.** AgentGate holds the call (`--approval-hold`, default
   45 s). We measured that linked Claude sessions give up after 60 s *without
   telling the server*, so the hold stays below that. If no one decides in time,
-  the agent gets `-32002 ... Retry the same request after it is approved.` and
+  the agent gets `-31902 ... Retry the same request after it is approved.` and
   the approval stays open for `--approval-ttl` (default 600 s, never renewed).
   The identical retry then runs the frozen copy of the arguments, once.
 - **Checked again right before running:** identity, expiry, revocation, policy.
@@ -370,6 +370,16 @@ CSRF token, `Origin` and `Host` on every POST, escapes everything it shows,
 masks secret-looking argument values, forbids scripts and framing with a strict
 CSP, and recomputes each request's fingerprint so a request whose shown details
 were altered can't be approved.
+
+**Error codes.** AgentGate answers with its own codes, outside the JSON-RPC
+reserved range (`-32768..-32000`) as MCP asks for application errors:
+`-31901` blocked, `-31902` needs approval. (mcp-gate used `-32001`/`-32002`;
+`-32002` means "resource not found" in MCP.)
+
+**Waiting.** The hold is a short wait, not a long one: linked Claude sessions
+were measured to wait 45 s and 55 s but give up at 120 s, without telling the
+server. Anything longer works only through the identical retry within
+`--approval-ttl`. Long synchronous waits are not supported.
 
 **Limits.** On a single Windows account, a process running as you (an agent
 with a terminal tool, say) could read the login code or the approval key file,
