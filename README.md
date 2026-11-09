@@ -272,6 +272,36 @@ mcp-gate run --policy policy.yaml --audit audit.jsonl --pubkey <PUB_HEX> -- <ser
 The token embeds its scheme, and each verifier refuses a mismatched scheme, so an
 attacker cannot downgrade an Ed25519 deployment to HMAC.
 
+### Least privilege by identity (AgentGate)
+
+Each agent gets only the tools and paths its role needs; everything else is
+denied by default and hidden from that agent's tool list.
+
+- **No valid identity, no start.** When `--pubkey` or `--secret` is set, the
+  proxy refuses to start if `MCPGATE_AGENT_TOKEN` is missing, forged or
+  expired (exit code 3). It never falls back to running as "anonymous".
+- **Token age is configurable:** `--token-max-age SECONDS` (default 3600).
+- **`check` warns about broad grants:** any non-deny rule that applies to every
+  agent (`agents: ["*"]` with no `require_roles`) is printed as a
+  `WARNING`. It is a warning, not an error: the exit code stays 0.
+
+The demo (`examples/demo_setup.py`) uses two identities:
+
+| Agent | Roles | May do |
+|---|---|---|
+| reader-agent | reader | list + read inside the workspace |
+| admin-agent | reader, admin | the same, plus delete inside the workspace |
+
+Claude Desktop is given the **reader** token, so the agent used every day holds
+the least privilege. `examples/demo_check.py` tests both identities and the
+missing, forged and expired token cases.
+
+**Limits.** The proxy holds only the public key, so editing Claude Desktop's
+config cannot *mint* a token with more roles. But a token is a bearer token:
+anyone who can read an existing token (for example the admin token in the demo's
+`keys/` folder) can *copy* it until it expires. Keep tokens and the private key
+readable only by the user who needs them, and keep `--token-max-age` short.
+
 ---
 
 ## Verification
