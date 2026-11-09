@@ -1653,6 +1653,66 @@ def test_agentgate_error_codes_outside_jsonrpc_reserved_range():
     assert approval_pending_response(1)["error"]["code"] == -31902
 
 
+# ---- AgentGate: dashboard ---------------------------------------------------
+
+def _dashboard_log():
+    gate, mgr, who = _approval_setup(hold=0.05)
+    gate.handle_request(_read_call(1, "/ws/a"), who, "s")                       # allow
+    gate.handle_request(call(2, "read_file", {"path": "/etc/passwd"}), who, "s")  # deny
+    evil = "<script>alert(1)</script>"
+    gate.handle_request(call(3, evil, {"path": "/ws/a"}), who, "s")             # deny, hostile name
+    p = _hold(gate, who, _read_call(4))
+    mgr.resolve_hold(p, who, *mgr.wait_for_decision(p, who), None)
+    return gate, who, p
+
+
+def test_dashboard_counts_and_escapes():
+    from mcpgate.dashboard import generate_dashboard
+    gate, who, p = _dashboard_log()
+    page = generate_dashboard(gate.audit.path)
+    assert "<script>alert" not in page and "&lt;script&gt;" in page
+    assert "Content-Security-Policy" in page and "default-src 'none'" in page
+    assert "<script" not in page.lower().replace("&lt;script", "")
+    assert "verified" in page
+    assert ">2</div><div class='cap'>Denied" in page
+    assert "Not decided in time" in page
+
+
+def test_dashboard_leaves_out_attack_helpful_details():
+    from mcpgate.dashboard import generate_dashboard
+    gate, who, p = _dashboard_log()
+    page = generate_dashboard(gate.audit.path)
+    records = list(gate.audit)
+    for secret in {who.token_id, p.approval_id, p.req_hash,
+                   *(r["args_hash"] for r in records), *(r["hash"] for r in records),
+                   "/ws/a", "/etc/passwd"}:
+        assert secret and secret not in page, secret
+    for r in records:
+        reason = r["decision"].get("reason")
+        if reason and reason not in ("approval requested", "approval hold_timeout"):
+            assert reason not in page, reason
+
+
+def test_dashboard_flags_tampering_and_arabic():
+    from mcpgate.dashboard import generate_dashboard
+    gate, who, p = _dashboard_log()
+    path = gate.audit.path
+    lines = open(path, encoding="utf-8").read().splitlines()
+    rec = _json.loads(lines[0]); rec["decision"]["effect"] = "allow"
+    lines[0] = _json.dumps(rec)
+    open(path, "w", encoding="utf-8").write("\n".join(lines) + "\nnot json\n")
+    page = generate_dashboard(path)
+    assert "integrity: FAILED" in page and "Unreadable lines: 1" in page
+    ar = generate_dashboard(path, "ar")
+    assert 'dir="rtl"' in ar and "فشل الفحص" in ar
+
+
+def test_dashboard_empty_log():
+    from mcpgate.dashboard import generate_dashboard
+    page = generate_dashboard(os.path.join(tempfile.mkdtemp(), "none.jsonl"))
+    assert "No records yet." in page
+
+
 # ---- runner ----------------------------------------------------------------
 
 def _run_all():
