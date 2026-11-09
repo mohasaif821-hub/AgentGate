@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""20-sample verification harness for mcp-gate.
+"""20-sample verification harness for AgentGate.
 
 Runs 20 realistic tool calls through the FULL gate (engine + threat scanner +
 audit) against the example policy and checks each produced the expected effect.
@@ -18,13 +18,13 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from mcpgate.audit import AuditLog
-from mcpgate.decision import Effect
-from mcpgate.engine import PolicyEngine
-from mcpgate.gate import Gate
-from mcpgate.identity import AgentIdentity
-from mcpgate.policy import load_policy
-from mcpgate.session import InMemorySessionStore
+from agentgate.audit import AuditLog
+from agentgate.decision import Effect
+from agentgate.engine import PolicyEngine
+from agentgate.gate import Gate
+from agentgate.identity import AgentIdentity
+from agentgate.policy import load_policy
+from agentgate.session import InMemorySessionStore
 
 
 def support_agent():

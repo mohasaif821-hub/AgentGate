@@ -97,7 +97,7 @@ def main() -> int:
         ("delete_file", "deny", "__default__", "monitor"),
     ], str(audited))
 
-    verify = subprocess.run([cfg["command"], "-m", "mcpgate.cli", "verify", "--audit", str(audit_log)],
+    verify = subprocess.run([cfg["command"], "-m", "agentgate.cli", "verify", "--audit", str(audit_log)],
                             capture_output=True, text=True, env=env)
     dc.check("audit log hash chain verifies", verify.returncode == 0, verify.stdout + verify.stderr)
 

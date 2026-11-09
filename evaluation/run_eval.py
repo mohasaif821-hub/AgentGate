@@ -206,7 +206,7 @@ def mint(env: Env, agent: str, roles: list[str], **times) -> str:
 
 
 def revoke(env: Env, token: str) -> None:
-    r = subprocess.run([sys.executable, "-m", "mcpgate.cli", "revoke", "--list",
+    r = subprocess.run([sys.executable, "-m", "agentgate.cli", "revoke", "--list",
                         dc.option(env.cfg, "--revocation-list"), "--private-key-file",
                         str(env.root / "keys" / "agentgate_private_key.hex"), "--token", token],
                        capture_output=True, text=True, cwd=str(REPO),
@@ -328,7 +328,7 @@ def run_all(env: Env) -> dict[str, dict]:
 
     # --- identity ------------------------------------------------------------
     no_token = dict(env.cfg, env={k: v for k, v in env.cfg["env"].items()
-                                  if k != "MCPGATE_AGENT_TOKEN"})
+                                  if k != "AGENTGATE_AGENT_TOKEN"})
     do("C12", lambda: refuses(env, no_token))
     do("C13", lambda: refuses(env, with_token(env.cfg, dc.forged_token())))
     do("C14", lambda: refuses(env, with_token(env.cfg, _role_tampered(env.tokens["reader-agent"]))))
@@ -459,7 +459,7 @@ def _rejected(env: Env) -> dict:
 
 
 def _forged_decision(env: Env) -> dict:
-    from mcpgate.identity import Ed25519Signer
+    from agentgate.identity import Ed25519Signer
     c = session(env.short)
     try:
         dc.Human(env.root, "approve", key_hex=dc._hex(Ed25519Signer.generate()))
@@ -525,8 +525,8 @@ def _confidential_other_spelling(env: Env) -> dict:
 
 def _approval_page(env: Env) -> dict[str, dict]:
     """C28-C32: attack the approval page while a real request is waiting."""
-    from mcpgate.approver import ApproverService
-    from mcpgate.identity import Ed25519Signer
+    from agentgate.approver import ApproverService
+    from agentgate.identity import Ed25519Signer
     key = (env.root / "keys" / "approver_private_key.hex").read_text(encoding="utf-8").strip()
     svc = ApproverService(env.root / "approvals", Ed25519Signer(bytes.fromhex(key)), port=0)
     threading.Thread(target=svc.serve_forever, daemon=True).start()

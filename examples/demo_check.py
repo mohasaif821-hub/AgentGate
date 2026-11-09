@@ -43,7 +43,7 @@ import threading
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # for mcpgate
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # for agentgate
 
 PASSED: list[str] = []
 FAILED: list[str] = []
@@ -135,7 +135,7 @@ def main() -> int:
         return 1
     cfg = json.loads(snippet.read_text(encoding="utf-8"))["mcpServers"]["agentgate-demo"]
     tokens_file = root / "keys" / "tokens.json"
-    if "MCPGATE_AGENT_TOKEN" not in cfg.get("env", {}) or not tokens_file.exists() \
+    if "AGENTGATE_AGENT_TOKEN" not in cfg.get("env", {}) or not tokens_file.exists() \
             or "--revocation-list" not in cfg["args"] or "--approval-queue" not in cfg["args"]:
         print("This demo folder is from an older version: run demo_setup.py again.")
         return 1
@@ -214,7 +214,7 @@ def main() -> int:
     check("report.txt is back in the workspace", report.exists())
 
     # ---- 3. no valid identity: AgentGate must not start -----------------------
-    no_token = dict(cfg, env={k: v for k, v in cfg["env"].items() if k != "MCPGATE_AGENT_TOKEN"})
+    no_token = dict(cfg, env={k: v for k, v in cfg["env"].items() if k != "AGENTGATE_AGENT_TOKEN"})
     check("no token: AgentGate refuses to start", refuses_to_start(no_token))
     check("forged token: AgentGate refuses to start", refuses_to_start(with_token(cfg, forged_token())))
     signer = demo_signer(root)
@@ -249,7 +249,7 @@ def main() -> int:
         handshake(client)
         r = client.call("read_file", notes)
         check("revocation: allowed before revoking", tool_ok(r), json.dumps(r)[:200])
-        rv = subprocess.run([cfg["command"], "-m", "mcpgate.cli", "revoke",
+        rv = subprocess.run([cfg["command"], "-m", "agentgate.cli", "revoke",
                              "--list", str(rev_list),
                              "--private-key-file", str(root / "keys" / "agentgate_private_key.hex"),
                              "--token", temp_token],
@@ -313,7 +313,7 @@ def main() -> int:
     stderr += approval_checks(root, cfg)
 
     verify = subprocess.run(
-        [cfg["command"], "-m", "mcpgate.cli", "verify", "--audit", str(audit_log)],
+        [cfg["command"], "-m", "agentgate.cli", "verify", "--audit", str(audit_log)],
         capture_output=True, text=True, env={**os.environ, **cfg.get("env", {})})
     check("audit log hash chain verifies", verify.returncode == 0, verify.stdout + verify.stderr)
 
@@ -334,8 +334,8 @@ class Human(threading.Thread):
     def __init__(self, root: Path, verdict: str, key_hex: str | None = None,
                  skip: set[str] | None = None) -> None:
         super().__init__(daemon=True)
-        from mcpgate.approval import sign_decision
-        from mcpgate.identity import Ed25519Signer
+        from agentgate.approval import sign_decision
+        from agentgate.identity import Ed25519Signer
         key = key_hex or (root / "keys" / "approver_private_key.hex").read_text(encoding="utf-8").strip()
         self.signer, self.sign = Ed25519Signer(bytes.fromhex(key)), sign_decision
         self.queue, self.verdict, self.skip = root / "approvals", verdict, set(skip or ())
@@ -343,7 +343,7 @@ class Human(threading.Thread):
         self.start()
 
     def run(self) -> None:
-        from mcpgate.approval import write_json_atomic
+        from agentgate.approval import write_json_atomic
         end = time.time() + 20
         while time.time() < end:
             for f in sorted((self.queue / "pending").glob("*.json")):
@@ -405,7 +405,7 @@ def approval_checks(root: Path, cfg: dict) -> str:
     finally:
         err += client.close()
 
-    from mcpgate.identity import Ed25519Signer
+    from agentgate.identity import Ed25519Signer
     other_key = Ed25519Signer.generate()
     client = Client(short)
     try:
@@ -464,7 +464,7 @@ def list_tools(client: Client) -> list[str]:
 
 
 def with_token(cfg: dict, token: str) -> dict:
-    return dict(cfg, env=dict(cfg["env"], MCPGATE_AGENT_TOKEN=token))
+    return dict(cfg, env=dict(cfg["env"], AGENTGATE_AGENT_TOKEN=token))
 
 
 def with_option(cfg: dict, name: str, value: str) -> dict:
@@ -483,7 +483,7 @@ def option(cfg: dict, name: str) -> str:
 
 
 def demo_signer(root: Path):
-    from mcpgate.identity import Ed25519Signer
+    from agentgate.identity import Ed25519Signer
     key = (root / "keys" / "agentgate_private_key.hex").read_text(encoding="utf-8").strip()
     return Ed25519Signer(bytes.fromhex(key))
 
@@ -498,14 +498,14 @@ def old_format_token(signer) -> str:
 
 def forged_token() -> str:
     """A token for an 'admin' signed with a DIFFERENT key than AgentGate trusts."""
-    from mcpgate.identity import Ed25519Signer
+    from agentgate.identity import Ed25519Signer
     return Ed25519Signer.generate().sign("admin-agent", ["reader", "admin"])
 
 
 def refuses_to_start(cfg: dict) -> bool:
     env = {**os.environ, **cfg.get("env", {})}
-    if "MCPGATE_AGENT_TOKEN" not in cfg.get("env", {}):
-        env.pop("MCPGATE_AGENT_TOKEN", None)
+    if "AGENTGATE_AGENT_TOKEN" not in cfg.get("env", {}):
+        env.pop("AGENTGATE_AGENT_TOKEN", None)
     r = subprocess.run([cfg["command"], *cfg["args"]], env=env, stdin=subprocess.DEVNULL,
                        capture_output=True, text=True, timeout=30)
     return r.returncode != 0 and "refusing to start" in r.stderr

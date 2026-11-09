@@ -26,7 +26,7 @@ It creates a demo folder (default: <your home>/AgentGateDemo) with:
 
 Human approval: reading workspace/confidential needs a person to approve that
 one exact request in the approval page. Start the page in its own window:
-    python -m mcpgate.cli approver --queue <demo>/approvals --private-key-file <demo>/keys/approver_private_key.hex
+    python -m agentgate.cli approver --queue <demo>/approvals --private-key-file <demo>/keys/approver_private_key.hex
 
 and prints the block to paste into Claude Desktop's config file.
 
@@ -97,7 +97,7 @@ def main() -> int:
     # Signing key first, so a missing package changes nothing. Reuse an existing
     # key, so tokens already handed out stay valid.
     try:
-        from mcpgate.identity import Ed25519Signer
+        from agentgate.identity import Ed25519Signer
         key_file = root / "keys" / "agentgate_private_key.hex"
         if key_file.exists():
             signer = Ed25519Signer(bytes.fromhex(key_file.read_text(encoding="utf-8").strip()))
@@ -172,7 +172,7 @@ def main() -> int:
     server_cfg = {
         "command": sys.executable,
         "args": [
-            "-m", "mcpgate.cli", "run",
+            "-m", "agentgate.cli", "run",
             "--policy", str(policy_path),
             "--audit", str(root / "audit.jsonl"),
             "--pubkey", signer.public_key_hex(),
@@ -187,7 +187,7 @@ def main() -> int:
         ],
         "env": {
             "PYTHONPATH": str(REPO),
-            "MCPGATE_AGENT_TOKEN": tokens["reader-agent"],
+            "AGENTGATE_AGENT_TOKEN": tokens["reader-agent"],
         },
     }
     config_block = {"mcpServers": {"agentgate-demo": server_cfg}}
@@ -207,7 +207,7 @@ def main() -> int:
     print(f"Needs approval to read: {ws / 'confidential' / 'salaries.txt'}")
     print()
     print("To approve requests, run this in a SEPARATE window (from the AgentGate folder):")
-    print(f'  python -m mcpgate.cli approver --queue "{root / "approvals"}" '
+    print(f'  python -m agentgate.cli approver --queue "{root / "approvals"}" '
           f'--private-key-file "{approver_file}"')
     print()
     if args.install_claude_config:
@@ -225,8 +225,8 @@ def main() -> int:
 def ensure_revocation_list(root: Path, signer) -> tuple[Path, Path]:
     """Keep a valid signed list; otherwise write a fresh one with a NEWER version
     than the last trusted one, so AgentGate does not see it as a rollback."""
-    from mcpgate.identity import IdentityError
-    from mcpgate.revocation import build_list, parse_list, write_atomic
+    from agentgate.identity import IdentityError
+    from agentgate.revocation import build_list, parse_list, write_atomic
     lst = root / "revocation" / "revoked_tokens.json"
     state = root / "state" / "revocation_trusted_version.json"
     try:
