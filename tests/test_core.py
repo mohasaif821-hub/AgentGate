@@ -1578,6 +1578,8 @@ def test_approver_page_protections():
         st, hdr, _ = _http(svc, "GET", "/", host="evil.example:80")
         assert st == 403                                         # DNS rebinding
         assert "frame-ancestors 'none'" in _http(svc, "GET", "/")[1]["Content-Security-Policy"]
+        # no-referrer would make real browsers send "Origin: null" and break login
+        assert _http(svc, "GET", "/")[1]["Referrer-Policy"] == "same-origin"
         assert _http(svc, "POST", "/login", urlencode({"code": svc.login_code}), origin=None)[0] == 403
         assert _http(svc, "POST", "/login", urlencode({"code": svc.login_code}),
                      origin="http://evil.example")[0] == 403
