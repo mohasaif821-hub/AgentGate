@@ -83,6 +83,15 @@ def _cmd_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_dashboard(args: argparse.Namespace) -> int:
+    """AgentGate: static HTML dashboard built from the audit log."""
+    from pathlib import Path
+    from .dashboard import generate_dashboard
+    Path(args.out).write_text(generate_dashboard(args.audit, args.lang), encoding="utf-8")
+    print(f"wrote dashboard to {args.out} (open it in a browser; run again to refresh)")
+    return 0
+
+
 def _cmd_controls(args: argparse.Namespace) -> int:
     from .compliance import render_markdown_table, coverage_summary
     print(render_markdown_table())
@@ -334,6 +343,12 @@ def build_parser() -> argparse.ArgumentParser:
     prep.add_argument("--audit", required=True)
     prep.add_argument("--out", help="write Markdown here (default: stdout)")
     prep.set_defaults(func=_cmd_report)
+
+    pdb = sub.add_parser("dashboard", help="AgentGate: static HTML dashboard from the audit log")
+    pdb.add_argument("--audit", required=True)
+    pdb.add_argument("--out", default="agentgate-dashboard.html")
+    pdb.add_argument("--lang", choices=["en", "ar"], default="en")
+    pdb.set_defaults(func=_cmd_dashboard)
 
     pctl = sub.add_parser("controls", help="print the NIST/OWASP control mapping")
     pctl.set_defaults(func=_cmd_controls)
