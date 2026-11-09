@@ -388,7 +388,7 @@ def test_gate_blocks_denied_with_error():
     g = make_gate({"default_effect": "deny", "rules": []})
     out = g.handle_request(call(1, "x", {}), support_agent(), "s")
     assert out.forward_message is None
-    assert out.response_to_agent["error"]["code"] == -32001
+    assert out.response_to_agent["error"]["code"] == -31901
 
 
 def test_gate_passes_through_non_tool_calls():
@@ -413,7 +413,7 @@ def test_gate_approval_rejected_by_default_hook():
     g = make_gate({"default_effect": "require_approval", "rules": []})
     out = g.handle_request(call(1, "x", {}), support_agent(), "s")
     assert out.forward_message is None  # default hook rejects
-    assert out.response_to_agent["error"]["code"] == -32002
+    assert out.response_to_agent["error"]["code"] == -31902
 
 
 def test_gate_approval_hook_can_allow():
@@ -436,7 +436,7 @@ def test_gate_fail_closed_on_engine_error(monkeypatch=None):
     # AgentGate: same generic answer as a denial; the agent is not told the
     # engine failed (the audit log records __engine_failure__).
     assert out.response_to_agent["error"] == {
-        "code": -32001, "message": "AgentGate: request blocked by policy"}
+        "code": -31901, "message": "AgentGate: request blocked by policy"}
 
 
 def test_gate_fail_open_on_engine_error():
@@ -876,7 +876,7 @@ def test_proxy_fails_safe_when_policy_check_raises():
     p._pending_lists.add(_id_key(1))
     out, _ = _upstream(p, _tools_list_response(1, ["read_file", "delete_file"]))
     msg = _json.loads(out)
-    assert "result" not in msg and msg["error"]["code"] == -32001
+    assert "result" not in msg and msg["error"]["code"] == -31901
 
 
 # ---- AgentGate: what the agent sees vs what the audit log keeps ----------
@@ -885,7 +885,7 @@ def test_denial_message_gives_no_rule_or_reason():
     g = make_gate(_DEMO_LIKE)
     out = g.handle_request(call(1, "delete_file", {"path": "/ws/a"}), support_agent(), "s")
     err = out.response_to_agent["error"]
-    assert err == {"code": -32001, "message": "AgentGate: request blocked by policy"}
+    assert err == {"code": -31901, "message": "AgentGate: request blocked by policy"}
     import json as _json
     text = _json.dumps(out.response_to_agent)
     assert "deny-delete" not in text and "undone" not in text
@@ -897,7 +897,7 @@ def test_approval_message_is_generic():
          "reason": "internal detail"}]})
     out = g.handle_request(call(1, "x", {}), support_agent(), "s")
     assert out.response_to_agent["error"] == {
-        "code": -32002, "message": "AgentGate: request requires human approval"}
+        "code": -31902, "message": "AgentGate: request requires human approval"}
 
 
 def test_audit_log_keeps_rule_and_reason():
@@ -1322,7 +1322,7 @@ def test_revoked_mid_session_blocks_next_request():
     assert len(up.lines) == 1
     _write_list(lst, 2, [_payload(token)["jti"]])
     _call(proxy, up)
-    assert len(up.lines) == 1 and to_client[-1]["error"]["code"] == -32001
+    assert len(up.lines) == 1 and to_client[-1]["error"]["code"] == -31901
 
 
 def test_cli_revoke_command():
@@ -1439,7 +1439,7 @@ def test_identical_retry_after_late_approval_runs_once():
     p = _hold(gate, who, _read_call(1))
     mgr.resolve_hold(p, who, *mgr.wait_for_decision(p, who), None)        # hold times out
     out = gate.handle_request(_read_call(2), who, "s")                    # retry, undecided
-    assert out.response_to_agent["error"] == {"code": -32002, "message": APPROVAL_PENDING_MESSAGE}
+    assert out.response_to_agent["error"] == {"code": -31902, "message": APPROVAL_PENDING_MESSAGE}
     _decide(mgr, p)
     out = gate.handle_request(_read_call(3), who, "s")                    # retry, approved
     assert out.forward_message["id"] == 3
@@ -1491,7 +1491,7 @@ def test_pending_limit_per_agent():
         p = _hold(gate, who, _read_call(i, f"/ws/conf/f{i}.txt"))
         mgr.resolve_hold(p, who, *mgr.wait_for_decision(p, who), None)
     out = gate.handle_request(_read_call(9, "/ws/conf/f9.txt"), who, "s")
-    assert out.hold is None and out.response_to_agent["error"]["code"] == -32001
+    assert out.hold is None and out.response_to_agent["error"]["code"] == -31901
     assert _events(gate)[-1] == "too_many_pending"
 
 
@@ -1642,6 +1642,15 @@ def test_cli_refuses_same_key_for_tokens_and_approvals():
     rc = cli.main(["run", "--policy", pol, "--audit", pol + ".audit", "--pubkey", key,
                    "--approval-queue", tempfile.mkdtemp(), "--approver-pubkey", key, "--", "x"])
     assert rc == 1
+
+
+def test_agentgate_error_codes_outside_jsonrpc_reserved_range():
+    from mcpgate.enforce import (AGENTGATE_ACCESS_DENIED, AGENTGATE_APPROVAL_REQUIRED,
+                                 approval_pending_response, blocked_response)
+    for code in (AGENTGATE_ACCESS_DENIED, AGENTGATE_APPROVAL_REQUIRED):
+        assert not -32768 <= code <= -32000, code
+    assert blocked_response(1)["error"]["code"] == -31901
+    assert approval_pending_response(1)["error"]["code"] == -31902
 
 
 # ---- runner ----------------------------------------------------------------
