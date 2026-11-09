@@ -24,7 +24,7 @@ on:
   push:
     branches: [main]
     paths:
-      - "mcpgate/**"
+      - "agentgate/**"
       - "tests/**"
       - "pyproject.toml"
   workflow_dispatch:
@@ -88,7 +88,7 @@ jobs:
   release:
     needs: [gate, test]
     runs-on: ubuntu-latest
-    # PyPI's trusted publisher for mcp-gate-policy expects an environment: the first
+    # PyPI's trusted publisher for agentgate expects an environment: the first
     # run without one failed with `environment: MISSING` in the OIDC claims. Set to
     # `pypi`, matching veritrail and revoco, so all four declare the same name.
     environment: pypi
@@ -122,10 +122,10 @@ jobs:
         run: |
           set -euo pipefail
           CODE=$(curl -s -o /dev/null -w '%{http_code}' \
-            "https://pypi.org/pypi/mcp-gate-policy/$VERSION/json")
+            "https://pypi.org/pypi/agentgate/$VERSION/json")
           if [ "$CODE" = "200" ]; then
             echo "already=true" >> "$GITHUB_OUTPUT"
-            echo "::warning::mcp-gate-policy $VERSION is already on PyPI; skipping publish"
+            echo "::warning::agentgate $VERSION is already on PyPI; skipping publish"
           else
             echo "already=false" >> "$GITHUB_OUTPUT"
           fi
