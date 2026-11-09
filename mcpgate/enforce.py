@@ -11,9 +11,17 @@ let the operator choose between:
                the agent. This must be a conscious operator choice — never a
                silent default.
 
-MCP error codes follow JSON-RPC. We use -32001 (a server-defined error) for
-policy denials so the agent receives a clean, explainable rejection rather than
-a transport hang.
+MCP error codes follow JSON-RPC. Policy denials are a clean JSON-RPC error,
+so the agent gets a rejection rather than a transport hang.
+
+AgentGate error codes (documented here, kept OUTSIDE the JSON-RPC reserved
+range -32768..-32000). MCP 2026-07-28 says new application errors SHOULD be
+allocated outside that range: -32000..-32019 is legacy, -32020..-32099 is
+reserved for MCP itself, and -32002 already means "resource not found" in
+earlier MCP versions. mcp-gate originally used -32001/-32002.
+
+    -31901  AGENTGATE_ACCESS_DENIED      blocked by policy (or identity)
+    -31902  AGENTGATE_APPROVAL_REQUIRED  needs a human approval
 """
 
 from __future__ import annotations
@@ -24,8 +32,11 @@ from typing import Any
 
 from .decision import Decision, Effect
 
-POLICY_DENIED_CODE = -32001
-APPROVAL_REQUIRED_CODE = -32002
+AGENTGATE_ACCESS_DENIED = -31901
+AGENTGATE_APPROVAL_REQUIRED = -31902
+# names used by the rest of the code
+POLICY_DENIED_CODE = AGENTGATE_ACCESS_DENIED
+APPROVAL_REQUIRED_CODE = AGENTGATE_APPROVAL_REQUIRED
 INTERNAL_ERROR_CODE = -32603  # standard JSON-RPC internal error
 
 REDACTED = "***REDACTED***"
