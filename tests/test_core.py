@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -1350,6 +1351,295 @@ def test_audit_records_token_id():
     last = list(gate.audit)[-1]
     assert last["token_id"] == who.token_id and last["agent_id"] == "reader-agent"
     assert gate.audit.verify()[0]
+
+
+# ---- AgentGate: human approval bound to one request ----------------------
+
+_APPROVAL_POLICY = {
+    "default_effect": "deny",
+    "rules": [
+        {"id": "read-ws", "effect": "allow", "tools": ["read_file"],
+         "require_roles": ["reader"], "when": {"field": "path", "op": "within", "value": "/ws"}},
+        {"id": "confidential-needs-approval", "effect": "require_approval",
+         "tools": ["read_file"], "require_roles": ["reader"],
+         "when": {"field": "path", "op": "within", "value": "/ws/conf"}},
+    ],
+}
+_APPROVER_KEY = b"approver-key"
+
+
+def _approval_setup(hold=0.3, ttl=600.0, max_pending=3):
+    from mcpgate.approval import ApprovalManager
+    from mcpgate.identity import HmacVerifier
+    gate = make_gate(_APPROVAL_POLICY)
+    q = tempfile.mkdtemp()
+    mgr = ApprovalManager(q, HmacVerifier(_APPROVER_KEY), audit=gate.audit,
+                          engine=gate.engine, hold_seconds=hold, ttl_seconds=ttl,
+                          max_pending=max_pending, poll_seconds=0.02)
+    gate.approvals = mgr
+    who = verify_token(b"k", issue_token(b"k", "reader-agent", ["reader"]), 3600)
+    return gate, mgr, who
+
+
+def _read_call(id_, path="/ws/conf/plan.txt"):
+    return call(id_, "read_file", {"path": path})
+
+
+def _decide(mgr, pending, verdict="approve", key=_APPROVER_KEY, **over):
+    from mcpgate.approval import sign_decision, write_json_atomic
+    from mcpgate.identity import HmacVerifier
+    doc = sign_decision(HmacVerifier(key), approval_id=over.get("approval_id", pending.approval_id),
+                        req_hash=over.get("req_hash", pending.req_hash), decision=verdict,
+                        approver_id="operator", decided_at=over.get("decided_at"))
+    write_json_atomic(mgr.decision_dir / f"{pending.approval_id}.json", doc)
+
+
+def _hold(gate, who, msg):
+    out = gate.handle_request(msg, who, "s")
+    assert out.hold is not None and out.forward_message is None and out.response_to_agent is None
+    return out.hold
+
+
+def _events(gate):
+    return [e["decision"]["obligations"].get("approval_event") for e in gate.audit
+            if "approval_event" in e["decision"].get("obligations", {})]
+
+
+def test_approval_during_hold_runs_frozen_copy_once():
+    gate, mgr, who = _approval_setup()
+    msg = _read_call(1)
+    p = _hold(gate, who, msg)
+    msg["params"]["arguments"]["path"] = "/etc/passwd"     # agent edits its own object later
+    _decide(mgr, p)
+    verdict, approver = mgr.wait_for_decision(p, who)
+    res = mgr.resolve_hold(p, who, verdict, approver, None)
+    assert res.forward["params"]["arguments"]["path"] == "/ws/conf/plan.txt"   # frozen
+    assert res.forward["id"] == 1
+    assert _events(gate) == ["requested", "approved_executed"]
+    # identical request again: needs a NEW approval (used once)
+    assert _hold(gate, who, _read_call(2)).approval_id != p.approval_id
+    assert gate.audit.verify()[0]
+
+
+def test_approval_rejected_or_timed_out():
+    gate, mgr, who = _approval_setup()
+    p = _hold(gate, who, _read_call(1))
+    _decide(mgr, p, "reject")
+    v, a = mgr.wait_for_decision(p, who)
+    assert mgr.resolve_hold(p, who, v, a, None).respond == "blocked"
+    p2 = _hold(gate, who, _read_call(2, "/ws/conf/other.txt"))
+    v, a = mgr.wait_for_decision(p2, who)                  # nobody answers
+    assert v is None and mgr.resolve_hold(p2, who, v, a, None).respond == "pending"
+    assert _events(gate) == ["requested", "rejected", "requested", "hold_timeout"]
+
+
+def test_identical_retry_after_late_approval_runs_once():
+    from mcpgate.enforce import APPROVAL_PENDING_MESSAGE
+    gate, mgr, who = _approval_setup()
+    p = _hold(gate, who, _read_call(1))
+    mgr.resolve_hold(p, who, *mgr.wait_for_decision(p, who), None)        # hold times out
+    out = gate.handle_request(_read_call(2), who, "s")                    # retry, undecided
+    assert out.response_to_agent["error"] == {"code": -32002, "message": APPROVAL_PENDING_MESSAGE}
+    _decide(mgr, p)
+    out = gate.handle_request(_read_call(3), who, "s")                    # retry, approved
+    assert out.forward_message["id"] == 3
+    assert out.forward_message["params"]["arguments"] == {"path": "/ws/conf/plan.txt"}
+    out = gate.handle_request(_read_call(4), who, "s")                    # used up
+    assert out.forward_message is None and out.hold is not None
+
+
+def test_changed_request_does_not_use_the_approval():
+    gate, mgr, who = _approval_setup()
+    p = _hold(gate, who, _read_call(1))
+    mgr.resolve_hold(p, who, *mgr.wait_for_decision(p, who), None)
+    _decide(mgr, p)
+    changed = gate.handle_request(_read_call(2, "/ws/conf/plan.txt "), who, "s")   # one space
+    assert changed.forward_message is None and changed.hold is not None
+    other_token = verify_token(b"k", issue_token(b"k", "reader-agent", ["reader"]), 3600)
+    same_args_new_token = gate.handle_request(_read_call(3), other_token, "s")
+    assert same_args_new_token.forward_message is None
+    assert gate.handle_request(_read_call(4), who, "s").forward_message is not None
+
+
+def test_forged_or_mismatched_decision_is_ignored():
+    gate, mgr, who = _approval_setup()
+    p = _hold(gate, who, _read_call(1))
+    _decide(mgr, p, key=b"attacker-key")
+    v, a = mgr.wait_for_decision(p, who)
+    assert v is None
+    _decide(mgr, p, req_hash="0" * 64)                     # right key, wrong request
+    v, a = mgr.wait_for_decision(p, who)
+    assert v is None and mgr.resolve_hold(p, who, v, a, None).respond == "pending"
+    assert _events(gate).count("invalid_decision_ignored") >= 2
+    assert not (mgr.decision_dir / f"{p.approval_id}.json").exists()
+
+
+def test_approval_expires_and_is_not_renewed():
+    gate, mgr, who = _approval_setup(hold=0.1, ttl=0.3)
+    p = _hold(gate, who, _read_call(1))
+    mgr.resolve_hold(p, who, *mgr.wait_for_decision(p, who), None)
+    _decide(mgr, p)                                        # approved in time...
+    time.sleep(0.35)                                       # ...but retried too late
+    out = gate.handle_request(_read_call(2), who, "s")
+    assert out.forward_message is None
+    assert "expired" in _events(gate)
+
+
+def test_pending_limit_per_agent():
+    gate, mgr, who = _approval_setup(hold=0.05, max_pending=3)
+    for i in range(3):
+        p = _hold(gate, who, _read_call(i, f"/ws/conf/f{i}.txt"))
+        mgr.resolve_hold(p, who, *mgr.wait_for_decision(p, who), None)
+    out = gate.handle_request(_read_call(9, "/ws/conf/f9.txt"), who, "s")
+    assert out.hold is None and out.response_to_agent["error"]["code"] == -32001
+    assert _events(gate)[-1] == "too_many_pending"
+
+
+def test_identity_invalid_at_execution_blocks():
+    gate, mgr, who = _approval_setup()
+    p = _hold(gate, who, _read_call(1))
+    _decide(mgr, p)
+    v, a = mgr.wait_for_decision(p, who)
+    res = mgr.resolve_hold(p, who, v, a, "identity token has been revoked")
+    assert res.forward is None and res.respond == "blocked"
+    assert _events(gate)[-1] == "identity_invalid"
+
+
+def test_leftover_queue_files_are_void_after_restart():
+    from mcpgate.approval import ApprovalManager
+    from mcpgate.identity import HmacVerifier
+    gate, mgr, who = _approval_setup()
+    p = _hold(gate, who, _read_call(1))
+    _decide(mgr, p)
+    again = ApprovalManager(mgr.queue, HmacVerifier(_APPROVER_KEY), audit=gate.audit,
+                            engine=gate.engine)
+    assert list(again.pending_dir.iterdir()) == [] and list(again.decision_dir.iterdir()) == []
+
+
+def test_proxy_holds_without_blocking_and_forwards_after_approval():
+    gate, mgr, who = _approval_setup(hold=2.0)
+    from mcpgate.stdio_proxy import StdioProxy
+    proxy = StdioProxy(gate, ["unused"])
+    proxy._identity = who
+    to_client = []
+    proxy._write_client = to_client.append
+    up = _Sink()
+    proxy._handle_client_line(_json.dumps(_read_call(1)), who, up)        # held
+    proxy._handle_client_line(_json.dumps(_read_call(2, "/ws/a")), who, up)   # not blocked
+    assert [m["id"] for m in up.lines] == [2]
+    deadline = time.time() + 2
+    while not list(mgr.pending_dir.glob("*.json")) and time.time() < deadline:
+        time.sleep(0.01)
+    pid = list(mgr.pending_dir.glob("*.json"))[0].stem
+    _decide(mgr, mgr._by_id[pid])
+    while len(up.lines) < 2 and time.time() < deadline + 2:
+        time.sleep(0.02)
+    assert [m["id"] for m in up.lines] == [2, 1] and to_client == []
+
+
+def _approver_service():
+    from mcpgate.approver import ApproverService
+    from mcpgate.identity import HmacVerifier
+    gate, mgr, who = _approval_setup(hold=0.05)
+    svc = ApproverService(mgr.queue, HmacVerifier(_APPROVER_KEY), port=0)
+    threading.Thread(target=svc.serve_forever, daemon=True).start()
+    return gate, mgr, who, svc
+
+
+def _http(svc, method, path, body="", host=None, origin="same", cookie=None):
+    import http.client
+    conn = http.client.HTTPConnection("127.0.0.1", svc.port, timeout=5)
+    headers = {"Host": host or f"127.0.0.1:{svc.port}",
+               "Content-Type": "application/x-www-form-urlencoded"}
+    if origin == "same":
+        headers["Origin"] = f"http://127.0.0.1:{svc.port}"
+    elif origin:
+        headers["Origin"] = origin
+    if cookie:
+        headers["Cookie"] = cookie
+    conn.request(method, path, body=body, headers=headers)
+    r = conn.getresponse()
+    return r.status, dict(r.getheaders()), r.read().decode()
+
+
+def _login(svc):
+    from urllib.parse import urlencode
+    st, hdr, _ = _http(svc, "POST", "/login", urlencode({"code": svc.login_code}))
+    assert st == 303, st
+    return hdr["Set-Cookie"].split(";")[0]
+
+
+def test_approver_page_protections():
+    import re
+    from urllib.parse import urlencode
+    gate, mgr, who, svc = _approver_service()
+    try:
+        assert svc.httpd.server_address[0] == "127.0.0.1"
+        st, hdr, _ = _http(svc, "GET", "/", host="evil.example:80")
+        assert st == 403                                         # DNS rebinding
+        assert "frame-ancestors 'none'" in _http(svc, "GET", "/")[1]["Content-Security-Policy"]
+        assert _http(svc, "POST", "/login", urlencode({"code": svc.login_code}), origin=None)[0] == 403
+        assert _http(svc, "POST", "/login", urlencode({"code": svc.login_code}),
+                     origin="http://evil.example")[0] == 403
+        assert _http(svc, "POST", "/login", urlencode({"code": "wrong"}))[0] == 403
+        cookie = _login(svc)
+        assert "HttpOnly" in _http(svc, "POST", "/login", urlencode({"code": svc.login_code}))[1]["Set-Cookie"]
+        p = _hold(gate, who, call(1, "read_file", {"path": "/ws/conf/<script>alert(1)</script>",
+                                                   "api_key": "sk-123"}))
+        st, _, page = _http(svc, "GET", "/", cookie=cookie)
+        assert "<script>alert" not in page and "&lt;script&gt;" in page    # escaped
+        assert "sk-123" not in page                                         # masked
+        csrf = re.search(r"name='csrf' value='([^']+)'", page).group(1)
+        form = {"id": p.approval_id, "decision": "approve"}
+        assert _http(svc, "POST", "/decide", urlencode(form), cookie=cookie)[0] == 403   # no csrf
+        assert _http(svc, "POST", "/decide", urlencode({**form, "csrf": csrf}))[0] == 403  # no session
+        st, _, body = _http(svc, "POST", "/decide", urlencode({**form, "csrf": csrf}), cookie=cookie)
+        assert st == 200 and "approved" in body
+        v, a = mgr.wait_for_decision(p, who)
+        assert v == "approve" and a == "operator"
+        st, _, body = _http(svc, "POST", "/decide", urlencode({**form, "csrf": csrf}), cookie=cookie)
+        assert "already decided" in body
+    finally:
+        svc.httpd.shutdown()
+
+
+def test_approver_refuses_request_with_altered_details():
+    from urllib.parse import urlencode
+    import re
+    gate, mgr, who, svc = _approver_service()
+    try:
+        p = _hold(gate, who, _read_call(1, "/ws/conf/delete-everything.txt"))
+        f = mgr.pending_dir / f"{p.approval_id}.json"
+        doc = _json.loads(f.read_text())
+        doc["arguments"]["path"] = "/ws/conf/harmless.txt"     # disguise the request
+        f.write_text(_json.dumps(doc))
+        cookie = _login(svc)
+        page = _http(svc, "GET", "/", cookie=cookie)[2]
+        assert "can&#x27;t be approved" in page or "can't be approved" in page
+        csrf = re.search(r"name='csrf' value='([^']+)'", page)
+        assert csrf is None                                   # no buttons at all
+        assert "not signed" in svc.decide(p.approval_id, "approve")
+        assert not (mgr.decision_dir / f"{p.approval_id}.json").exists()
+    finally:
+        svc.httpd.shutdown()
+
+
+def test_approver_stops_after_too_many_wrong_codes():
+    from urllib.parse import urlencode
+    gate, mgr, who, svc = _approver_service()
+    for _ in range(5):
+        _http(svc, "POST", "/login", urlencode({"code": "nope"}))
+    assert svc.login(svc.login_code) is None
+
+
+def test_cli_refuses_same_key_for_tokens_and_approvals():
+    from mcpgate import cli
+    pol = os.path.join(tempfile.mkdtemp(), "p.json")
+    open(pol, "w").write(_json.dumps(_APPROVAL_POLICY))
+    key = "11" * 32
+    rc = cli.main(["run", "--policy", pol, "--audit", pol + ".audit", "--pubkey", key,
+                   "--approval-queue", tempfile.mkdtemp(), "--approver-pubkey", key, "--", "x"])
+    assert rc == 1
 
 
 # ---- runner ----------------------------------------------------------------
