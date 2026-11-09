@@ -25,3 +25,5 @@ jobs:
         run: python tests/test_samples.py
       - name: Policy validation
         run: python -m mcpgate.cli check --policy examples/policy.yaml
+      - name: Evaluation (Chapter 1 targets)
+        run: python evaluation/run_eval.py --gate
