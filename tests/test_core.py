@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -1105,7 +1106,10 @@ def test_proxy_refuses_to_start_without_valid_identity():
     assert _with_token_env(None, lambda: _identity_proxy().run()) == 3
     assert _with_token_env("garbage", lambda: _identity_proxy().run()) == 3
     assert _with_token_env(forged, lambda: _identity_proxy().run()) == 3
-    assert _with_token_env(good, lambda: _identity_proxy(max_age=0).run()) == 3   # expired
+    expired = issue_token(b"k", "reader-agent", ["reader"], issued_at=time.time() - 100,
+                          ttl_seconds=10)
+    assert _with_token_env(expired, lambda: _identity_proxy().run()) == 3
+    assert _with_token_env(good, lambda: _identity_proxy(max_age=0).run()) == 3   # over the cap
     who = _with_token_env(good, lambda: _identity_proxy()._resolve_identity())
     assert who.agent_id == "reader-agent" and who.has_role("reader")
 
@@ -1135,6 +1139,217 @@ def test_least_privilege_check_flags_grants_to_every_agent():
     warnings = least_privilege_warnings(broad)
     assert len(warnings) == 1 and "everyone-reads" in warnings[0]
     assert least_privilege_warnings(parse_policy(_ROLE_POLICY)) == []
+
+
+# ---- AgentGate: token times, per-request checks, revocation ---------------
+
+import json as _json
+
+
+def _payload(token):
+    return _json.loads(bytes.fromhex(token.split(".")[0]))
+
+
+def _resign_hmac(secret, payload):
+    import hashlib, hmac as _h
+    raw = _json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+    return f"{raw.hex()}.hmac-sha256.{_h.new(secret, raw, hashlib.sha256).hexdigest()}"
+
+
+def _raises_identity(fn):
+    try:
+        fn()
+    except IdentityError:
+        return True
+    return False
+
+
+def test_token_carries_signed_exp_and_unique_id():
+    a = issue_token(SECRET, "a", ["r"], ttl_seconds=120)
+    b = issue_token(SECRET, "a", ["r"], ttl_seconds=120)
+    pa = _payload(a)
+    assert pa["v"] == 2 and pa["exp"] - pa["iat"] == 120
+    assert pa["jti"] and pa["jti"] != _payload(b)["jti"]
+    ident = verify_token(SECRET, a, 3600)
+    assert ident.token_id == pa["jti"] and ident.expires_at == pa["exp"]
+    # extending exp without re-signing breaks the signature
+    raw_hex, scheme, sig = a.split(".", 2)
+    pa["exp"] += 10_000
+    longer = _json.dumps(pa, separators=(",", ":"), sort_keys=True).encode().hex()
+    assert _raises_identity(lambda: verify_token(SECRET, f"{longer}.{scheme}.{sig}", 3600))
+
+
+def test_token_times_must_be_consistent_and_within_cap():
+    now = time.time()
+    ok = issue_token(SECRET, "a", [], ttl_seconds=600)
+    assert verify_token(SECRET, ok, 3600).agent_id == "a"
+    future = issue_token(SECRET, "a", [], issued_at=now + 3600, ttl_seconds=600)
+    backwards = issue_token(SECRET, "a", [], ttl_seconds=-5)
+    too_long = issue_token(SECRET, "a", [], ttl_seconds=30 * 86400)          # not expired
+    odd_iat = issue_token(SECRET, "a", [], issued_at=now - 86400, ttl_seconds=86400 + 600)
+    expired = issue_token(SECRET, "a", [], issued_at=now - 100, ttl_seconds=10)
+    for bad in (future, backwards, too_long, odd_iat, expired):
+        assert _raises_identity(lambda: verify_token(SECRET, bad, 3600)), _payload(bad)
+
+
+def test_token_without_v2_fields_is_refused():
+    old = _resign_hmac(SECRET, {"agent_id": "a", "roles": ["admin"],
+                                "issued_at": time.time(), "claims": {}})
+    assert _raises_identity(lambda: verify_token(SECRET, old, 3600))
+    p = _payload(issue_token(SECRET, "a", []))
+    for key, value in (("exp", "soon"), ("exp", True), ("jti", ""), ("iat", float("nan"))):
+        broken = dict(p, **{key: value})
+        assert _raises_identity(lambda: verify_token(SECRET, _resign_hmac(SECRET, broken), 3600)), key
+
+
+class _Sink:
+    def __init__(self):
+        self.lines = []
+
+    def write(self, data):
+        self.lines.append(_json.loads(data))
+
+    def flush(self):
+        pass
+
+
+def _live_proxy(token, revocation=None):
+    from mcpgate.identity import HmacVerifier
+    from mcpgate.stdio_proxy import StdioProxy
+    p = StdioProxy(make_gate(_ROLE_POLICY), ["unused"], verifier=HmacVerifier(b"k"),
+                   max_age_seconds=3600, revocation=revocation)
+    p._token = token
+    p._identity = p._verify_token()
+    sent_to_client = []
+    p._write_client = sent_to_client.append
+    return p, sent_to_client
+
+
+def _call(proxy, sink, path="/ws/a"):
+    msg = {"jsonrpc": "2.0", "id": 7, "method": "tools/call",
+           "params": {"name": "read_file", "arguments": {"path": path}}}
+    proxy._handle_client_line(_json.dumps(msg), proxy._identity, sink)
+
+
+def test_identity_is_rechecked_on_every_request():
+    proxy, to_client = _live_proxy(issue_token(b"k", "reader-agent", ["reader"]))
+    up = _Sink()
+    _call(proxy, up)
+    assert len(up.lines) == 1 and to_client == []            # allowed, forwarded
+    # the same session's token is now expired: next request is refused
+    proxy._token = issue_token(b"k", "reader-agent", ["reader"],
+                               issued_at=time.time() - 100, ttl_seconds=10)
+    _call(proxy, up)
+    assert len(up.lines) == 1, "nothing may be forwarded"
+    assert to_client[-1]["error"]["message"] == "AgentGate: request blocked by policy"
+    proxy._token = "garbage"
+    _call(proxy, up)
+    assert len(up.lines) == 1 and len(to_client) == 2
+    refused = [e for e in proxy.gate.audit if e["decision"]["rule_id"] == "__identity__"]
+    assert len(refused) == 2 and all(e["decision"]["effect"] == "deny" for e in refused)
+    assert proxy.gate.audit.verify()[0]
+
+
+def _revocation_files():
+    d = tempfile.mkdtemp()
+    return os.path.join(d, "revoked.json"), os.path.join(d, "state", "trusted.json")
+
+
+def _write_list(path, version, ids, secret=b"k"):
+    from mcpgate.identity import HmacVerifier
+    from mcpgate.revocation import build_list
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(_json.dumps(build_list(HmacVerifier(secret), version, ids)))
+
+
+def test_revocation_by_token_id_checked_each_time():
+    from mcpgate.identity import HmacVerifier
+    from mcpgate.revocation import RevocationChecker
+    lst, state = _revocation_files()
+    stolen = verify_token(b"k", issue_token(b"k", "a", []), 3600)
+    other = verify_token(b"k", issue_token(b"k", "a", []), 3600)   # same agent
+    _write_list(lst, 1, [])
+    chk = RevocationChecker(lst, state, HmacVerifier(b"k"))
+    chk.check(stolen.token_id)
+    _write_list(lst, 2, [stolen.token_id])
+    assert _raises_identity(lambda: chk.check(stolen.token_id))
+    chk.check(other.token_id)                     # only that token is revoked
+    assert _json.load(open(state))["trusted_version"] == 2
+
+
+def test_revocation_list_tamper_missing_and_rollback_refused():
+    from mcpgate.identity import HmacVerifier
+    from mcpgate.revocation import RevocationChecker
+    lst, state = _revocation_files()
+    v = HmacVerifier(b"k")
+    _write_list(lst, 1, ["t1"])
+    v1 = open(lst).read()
+    chk = RevocationChecker(lst, state, v)
+    _write_list(lst, 2, ["t1", "stolen"])
+    v2 = open(lst).read()
+    chk.check("fine")
+    # 1. tamper: drop "stolen" but keep the signature
+    doc = _json.loads(v2); doc["revoked"] = ["t1"]
+    open(lst, "w").write(_json.dumps(doc))
+    assert _raises_identity(lambda: chk.check("fine"))
+    # 2. signed by someone else
+    _write_list(lst, 3, [], secret=b"attacker")
+    assert _raises_identity(lambda: chk.check("fine"))
+    # 3. rollback to the older, validly signed v1 (which doesn't list "stolen")
+    open(lst, "w").write(v1)
+    assert _raises_identity(lambda: chk.check("stolen"))
+    # ...and also after a restart: the trusted version lives outside the list
+    assert _raises_identity(lambda: RevocationChecker(lst, state, v))
+    # 4. missing list
+    os.remove(lst)
+    assert _raises_identity(lambda: chk.check("fine"))
+    # 5. corrupt state file
+    open(lst, "w").write(v2)
+    open(state, "w").write("{not json")
+    assert _raises_identity(lambda: RevocationChecker(lst, state, v))
+
+
+def test_revoked_mid_session_blocks_next_request():
+    from mcpgate.identity import HmacVerifier
+    from mcpgate.revocation import RevocationChecker
+    lst, state = _revocation_files()
+    _write_list(lst, 1, [])
+    token = issue_token(b"k", "reader-agent", ["reader"])
+    proxy, to_client = _live_proxy(token, RevocationChecker(lst, state, HmacVerifier(b"k")))
+    up = _Sink()
+    _call(proxy, up)
+    assert len(up.lines) == 1
+    _write_list(lst, 2, [_payload(token)["jti"]])
+    _call(proxy, up)
+    assert len(up.lines) == 1 and to_client[-1]["error"]["code"] == -32001
+
+
+def test_cli_revoke_command():
+    from mcpgate import cli
+    from mcpgate.identity import HmacVerifier
+    from mcpgate.revocation import parse_list
+    lst, _ = _revocation_files()
+    base = ["revoke", "--list", lst, "--scheme", "hmac", "--secret", "k"]
+    assert cli.main(base) == 1                               # missing, no --init
+    assert cli.main(base + ["--init"]) == 0
+    assert cli.main(base + ["--init"]) == 1                  # won't overwrite
+    tok = issue_token(b"k", "a", [])
+    assert cli.main(base + ["--token", tok, "--token-id", "abc"]) == 0
+    version, revoked = parse_list(open(lst).read(), HmacVerifier(b"k"))
+    assert version == 2 and revoked == {"abc", _payload(tok)["jti"]}
+    assert cli.main(["revoke", "--list", lst, "--scheme", "hmac", "--secret", "wrong",
+                     "--token-id", "x"]) == 1                # can't trust current list
+
+
+def test_audit_records_token_id():
+    gate = make_gate(_ROLE_POLICY)
+    who = verify_token(b"k", issue_token(b"k", "reader-agent", ["reader"]), 3600)
+    gate.handle_request({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                         "params": {"name": "read_file", "arguments": {"path": "/ws/a"}}},
+                        who, "s")
+    last = list(gate.audit)[-1]
+    assert last["token_id"] == who.token_id and last["agent_id"] == "reader-agent"
+    assert gate.audit.verify()[0]
 
 
 # ---- runner ----------------------------------------------------------------
