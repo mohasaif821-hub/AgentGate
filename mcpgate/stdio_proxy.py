@@ -73,19 +73,31 @@ class StdioProxy:
         self._write_lock = threading.Lock()
 
     def _resolve_identity(self) -> AgentIdentity:
+        """Who is this agent?
+
+        No verifier configured: there is no identity system, so the agent is
+        'anonymous' and the policy decides what anonymous may do.
+
+        Verifier configured (AgentGate): the agent MUST present a valid, fresh
+        token. A missing, forged or expired token raises IdentityError and the
+        proxy refuses to start, instead of silently running with unknown
+        privileges.
+        """
+        if self.verifier is None:
+            return AgentIdentity.anonymous()
         token = os.environ.get("MCPGATE_AGENT_TOKEN")
-        if not token or self.verifier is None:
-            # No verifiable identity provided: treat as anonymous. Whether that
-            # is allowed is up to the policy (it can deny agent_id 'anonymous').
-            return AgentIdentity.anonymous()
-        try:
-            return self.verifier.verify(token, self.max_age_seconds)
-        except IdentityError as exc:
-            log.warning("identity verification failed: %s; using anonymous", exc)
-            return AgentIdentity.anonymous()
+        if not token:
+            raise IdentityError("identity is required but MCPGATE_AGENT_TOKEN is not set")
+        return self.verifier.verify(token, self.max_age_seconds)
 
     def run(self) -> int:
-        identity = self._resolve_identity()
+        try:
+            identity = self._resolve_identity()
+        except IdentityError as exc:
+            log.error("refusing to start: agent identity check failed: %s", exc)
+            return 3
+        log.info("agent identity: %s (roles: %s)", identity.agent_id,
+                 ", ".join(sorted(identity.roles)) or "none")
         self._identity = identity
         self._proc = subprocess.Popen(
             self.upstream_cmd,

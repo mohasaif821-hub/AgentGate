@@ -36,9 +36,29 @@ def _cmd_check(args: argparse.Namespace) -> int:
     if policy.default_effect.value == "allow":
         print("WARNING: default_effect is 'allow' — this fails OPEN on unmatched "
               "calls. Prefer 'deny' for a locked-down posture.", file=sys.stderr)
+    for warning in least_privilege_warnings(policy):
+        print(f"WARNING: {warning}", file=sys.stderr)
     print(f"OK: '{policy.name}' v{policy.version}, {len(policy.rules)} rules, "
           f"default={policy.default_effect.value}")
     return 0
+
+
+def least_privilege_warnings(policy) -> list[str]:
+    """AgentGate: flag rules that grant something to EVERY agent.
+
+    Least privilege means each agent gets only what its role needs. A rule that
+    lets any agent (agents "*" and no required role) through, even with
+    conditions, is a broad grant worth a second look. Deny rules are fine.
+    """
+    out = []
+    for rule in policy.rules:
+        if rule.effect.value == "deny":
+            continue
+        if "*" in rule.agents and not rule.require_roles:
+            out.append(f"rule '{rule.id}' ({rule.effect.value}) applies to every "
+                       "agent: least privilege suggests limiting it with "
+                       "'agents' or 'require_roles'")
+    return out
 
 
 def _cmd_verify(args: argparse.Namespace) -> int:
@@ -144,8 +164,12 @@ def _cmd_run(args: argparse.Namespace) -> int:
     elif args.secret:
         secret = args.secret.encode()
 
+    if args.token_max_age < 0:
+        print("refusing to start: --token-max-age must be >= 0", file=sys.stderr)
+        return 1
     proxy = StdioProxy(gate, args.upstream, identity_secret=secret,
-                       verifier=verifier, session_id=args.session)
+                       verifier=verifier, session_id=args.session,
+                       max_age_seconds=args.token_max_age)
     return proxy.run()
 
 
@@ -190,6 +214,10 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--secret", help="identity HMAC secret (symmetric; dev)")
     pr.add_argument("--pubkey", help="Ed25519 public key hex (asymmetric; recommended)")
     pr.add_argument("--session", default="stdio-session")
+    pr.add_argument("--token-max-age", type=float, default=3600.0,
+                    help="seconds an agent identity token stays valid after it is "
+                         "issued (default 3600). With --pubkey/--secret, a missing, "
+                         "forged or older token makes AgentGate refuse to start")
     pr.add_argument("--mode", choices=["enforce", "monitor"], default="enforce",
                     help="enforce (default) blocks per policy; monitor only records "
                          "what WOULD happen and blocks NOTHING (test environments only)")
