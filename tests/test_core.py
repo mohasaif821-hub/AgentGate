@@ -1034,6 +1034,109 @@ def test_report_flags_monitor_records():
     assert "MONITOR mode" in md and "NOT enforced" in md
 
 
+# ---- AgentGate: least privilege by identity ------------------------------
+
+_ROLE_POLICY = {
+    "default_effect": "deny",
+    "rules": [
+        {"id": "read-ws", "effect": "allow", "tools": ["list_files", "read_file"],
+         "require_roles": ["reader"],
+         "when": {"field": "path", "op": "within", "value": "/ws"}},
+        {"id": "admin-delete-ws", "effect": "allow", "tools": ["delete_file"],
+         "require_roles": ["admin"],
+         "when": {"field": "path", "op": "within", "value": "/ws"}},
+    ],
+}
+
+
+def _agent(name, *roles):
+    return AgentIdentity(agent_id=name, roles=frozenset(roles), issued_at=0.0, claims={})
+
+
+def test_roles_grant_only_what_each_role_needs():
+    eng = make_engine(_ROLE_POLICY)
+    reader = _agent("reader-agent", "reader")
+    admin = _agent("admin-agent", "reader", "admin")
+    anon = AgentIdentity.anonymous()
+    ev = lambda who, tool, path: eng.evaluate(tool, {"path": path}, who, "s").effect
+    assert ev(reader, "read_file", "/ws/a") is Effect.ALLOW
+    assert ev(reader, "delete_file", "/ws/a") is Effect.DENY
+    assert ev(admin, "read_file", "/ws/a") is Effect.ALLOW
+    assert ev(admin, "delete_file", "/ws/a") is Effect.ALLOW
+    assert ev(admin, "delete_file", "/etc/x") is Effect.DENY     # role + scope
+    assert ev(anon, "read_file", "/ws/a") is Effect.DENY
+
+
+def test_tool_list_follows_the_role():
+    eng = make_engine(_ROLE_POLICY)
+    reader = _agent("reader-agent", "reader")
+    admin = _agent("admin-agent", "reader", "admin")
+    assert eng.tool_visible("delete_file", reader) is False
+    assert eng.tool_visible("delete_file", admin) is True
+    assert eng.tool_visible("read_file", AgentIdentity.anonymous()) is False
+
+
+def _identity_proxy(secret=b"k", max_age=3600.0):
+    from mcpgate.identity import HmacVerifier
+    from mcpgate.stdio_proxy import StdioProxy
+    return StdioProxy(make_gate(_ROLE_POLICY), ["this-must-never-run"],
+                      verifier=HmacVerifier(secret), max_age_seconds=max_age)
+
+
+def _with_token_env(token, fn):
+    old = os.environ.get("MCPGATE_AGENT_TOKEN")
+    if token is None:
+        os.environ.pop("MCPGATE_AGENT_TOKEN", None)
+    else:
+        os.environ["MCPGATE_AGENT_TOKEN"] = token
+    try:
+        return fn()
+    finally:
+        if old is None:
+            os.environ.pop("MCPGATE_AGENT_TOKEN", None)
+        else:
+            os.environ["MCPGATE_AGENT_TOKEN"] = old
+
+
+def test_proxy_refuses_to_start_without_valid_identity():
+    good = issue_token(b"k", "reader-agent", ["reader"])
+    forged = issue_token(b"other-key", "admin-agent", ["reader", "admin"])
+    # run() returns 3 BEFORE launching the upstream command (which does not exist)
+    assert _with_token_env(None, lambda: _identity_proxy().run()) == 3
+    assert _with_token_env("garbage", lambda: _identity_proxy().run()) == 3
+    assert _with_token_env(forged, lambda: _identity_proxy().run()) == 3
+    assert _with_token_env(good, lambda: _identity_proxy(max_age=0).run()) == 3   # expired
+    who = _with_token_env(good, lambda: _identity_proxy()._resolve_identity())
+    assert who.agent_id == "reader-agent" and who.has_role("reader")
+
+
+def test_no_verifier_means_anonymous():
+    from mcpgate.stdio_proxy import StdioProxy
+    p = StdioProxy(make_gate(_ROLE_POLICY), ["unused"])
+    who = _with_token_env(issue_token(b"k", "admin-agent", ["admin"]), p._resolve_identity)
+    assert who.agent_id == AgentIdentity.anonymous().agent_id
+
+
+def test_cli_token_max_age_option():
+    from mcpgate import cli
+    args = cli.build_parser().parse_args(["run", "--policy", "p", "--audit", "a",
+                                          "--token-max-age", "120", "--", "x"])
+    assert args.token_max_age == 120.0
+    args = cli.build_parser().parse_args(["run", "--policy", "p", "--audit", "a", "--", "x"])
+    assert args.token_max_age == 3600.0
+
+
+def test_least_privilege_check_flags_grants_to_every_agent():
+    from mcpgate.cli import least_privilege_warnings
+    from mcpgate.policy import load_policy as parse_policy
+    broad = parse_policy({"default_effect": "deny", "rules": [
+        {"id": "everyone-reads", "effect": "allow", "tools": ["read_file"]},
+        {"id": "deny-all-delete", "effect": "deny", "tools": ["delete_file"]}]})
+    warnings = least_privilege_warnings(broad)
+    assert len(warnings) == 1 and "everyone-reads" in warnings[0]
+    assert least_privilege_warnings(parse_policy(_ROLE_POLICY)) == []
+
+
 # ---- runner ----------------------------------------------------------------
 
 def _run_all():
