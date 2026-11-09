@@ -1,3 +1,9 @@
+# Modified for AgentGate by Mohammed Jadulhaqq, 2026.
+# Based on mcp-gate (https://github.com/rsh1k/mcp-gate), Copyright 2026 The mcp-gate Authors.
+# AgentGate changes in this file:
+#   Deny-overrides precedence; merged redaction and obligations of all
+#   matching rules; per-identity tool visibility.
+# SPDX-License-Identifier: Apache-2.0
 """PolicyEngine: the Policy Decision Point.
 
 Given a tool call (tool name, arguments), the calling agent's identity, and a

@@ -1,3 +1,9 @@
+# Modified for AgentGate by Mohammed Jadulhaqq, 2026.
+# Based on mcp-gate (https://github.com/rsh1k/mcp-gate), Copyright 2026 The mcp-gate Authors.
+# AgentGate changes in this file:
+#   Project name and paths updated; licence label corrected from MIT (stale
+#   in the original) to Apache-2.0.
+# SPDX-License-Identifier: Apache-2.0
 # AgentGate container image.
 #
 # Design goals: small, non-root, no build toolchain in the final image, and a

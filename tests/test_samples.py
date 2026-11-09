@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+# Modified for AgentGate by Mohammed Jadulhaqq, 2026.
+# Based on mcp-gate (https://github.com/rsh1k/mcp-gate), Copyright 2026 The mcp-gate Authors.
+# AgentGate changes in this file:
+#   Expectations updated for deny-overrides and real-path checks.
+# SPDX-License-Identifier: Apache-2.0
 """20-sample verification harness for AgentGate.
 
 Runs 20 realistic tool calls through the FULL gate (engine + threat scanner +

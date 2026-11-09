@@ -1,3 +1,9 @@
+# Modified for AgentGate by Mohammed Jadulhaqq, 2026.
+# Based on mcp-gate (https://github.com/rsh1k/mcp-gate), Copyright 2026 The mcp-gate Authors.
+# AgentGate changes in this file:
+#   Added within / not_within conditions that check the real (resolved) path
+#   and fail closed.
+# SPDX-License-Identifier: Apache-2.0
 """Conditions: a small, SAFE predicate language over tool-call arguments.
 
 Policies need to say things like "amount under 500" or "path starts with /tmp".

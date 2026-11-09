@@ -1,3 +1,9 @@
+# Modified for AgentGate by Mohammed Jadulhaqq, 2026.
+# Based on mcp-gate (https://github.com/rsh1k/mcp-gate), Copyright 2026 The mcp-gate Authors.
+# AgentGate changes in this file:
+#   Monitor mode; fail-closed generic responses; integration of
+#   request-bound human approval.
+# SPDX-License-Identifier: Apache-2.0
 """Gate: the Policy Enforcement Point.
 
 This is the transport-agnostic brain of the proxy. Give it a parsed JSON-RPC

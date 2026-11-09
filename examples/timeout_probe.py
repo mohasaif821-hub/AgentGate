@@ -1,3 +1,5 @@
+# AgentGate. Copyright 2026 Mohammed Jadulhaqq.
+# SPDX-License-Identifier: Apache-2.0
 """Measure how long Claude Desktop waits for a slow tool (AgentGate design aid).
 
 Human approval means AgentGate holds a tool call while a person decides. This

@@ -1,41 +1,21 @@
-# Contributing to mcp-gate
+# Contributing to AgentGate
 
-Thanks for your interest. This project values correctness and clarity over
-feature count — it is security-critical software.
+AgentGate is security software, so correctness and honest evidence come before
+features.
 
-## Ground rules
+1. **Every behaviour change needs a test** in `tests/test_core.py`, and, when it
+   changes what is allowed or refused, a scenario in the evaluation.
+2. **Never edit `evaluation/scenarios.py` to make a result pass.** The scenarios
+   are frozen by their SHA-256 hash; new cases go in a new, separately frozen set.
+3. **No claims without evidence.** `agentgate/regulatory.py` only lists tests,
+   scenarios and files that prove the exact function claimed.
+4. **Keep the licence notices.** Apache-2.0: keep `NOTICE` (the mcp-gate notice
+   first), and keep the notice at the top of every changed file.
+5. Run before proposing a change:
 
-1. **Every behavior change needs a test.** The test corpus is how we keep the
-   false-positive/false-negative rate honest. Add cases to `tests/test_core.py`
-   (unit) or `tests/test_samples.py` (labeled end-to-end samples).
-2. **No new runtime dependencies in the core** without discussion. The core is
-   stdlib-only on purpose; that is part of what makes it auditable and easy to
-   self-host. Optional features can live behind extras (e.g. `[yaml]`).
-3. **No `eval`, `exec`, or dynamic code execution** in the policy/condition
-   path, ever. The whole point is that policy authors cannot run code.
-4. **Mark unfinished hardening** with a `# HARDENING:` comment so it is greppable
-   and shows up honestly to users.
-5. **Keep the engine pure.** I/O, networking, and transport belong in the proxy
-   and enforcement layers, not in `engine.py`.
-
-## Development setup
-
-```bash
-pip install -e ".[dev]"
-python tests/test_core.py
-python tests/test_samples.py
-```
-
-## Pull requests
-
-- Keep PRs focused. One concern per PR.
-- Update the README and the control mapping (`compliance.py`) if you change what
-  the tool does or which frameworks it maps to.
-- Be explicit in the PR description about security implications.
-
-## Good first contributions
-
-- Additional threat-scanner patterns (with tests and a clear category).
-- New condition operators (with tests).
-- HTTP/streamable transport support (see roadmap item 1).
-- A durable `SessionStore` backend (see roadmap item 2).
+   ```bash
+   python tests/test_core.py
+   python tests/test_samples.py
+   python -m agentgate.cli check --policy examples/policy.yaml
+   python evaluation/run_eval.py --gate
+   ```

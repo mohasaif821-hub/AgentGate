@@ -1,3 +1,5 @@
+# AgentGate. Copyright 2026 Mohammed Jadulhaqq.
+# SPDX-License-Identifier: Apache-2.0
 """AgentGate: signed token revocation list, checked on every request.
 
 A stolen token stays usable until it expires, unless it can be revoked. The

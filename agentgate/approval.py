@@ -1,3 +1,5 @@
+# AgentGate. Copyright 2026 Mohammed Jadulhaqq.
+# SPDX-License-Identifier: Apache-2.0
 """AgentGate: human approval bound to one exact request.
 
 Design (agreed before any code was written):

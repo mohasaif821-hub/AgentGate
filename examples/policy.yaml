@@ -1,3 +1,9 @@
+# Modified for AgentGate by Mohammed Jadulhaqq, 2026.
+# Based on mcp-gate (https://github.com/rsh1k/mcp-gate), Copyright 2026 The mcp-gate Authors.
+# AgentGate changes in this file:
+#   Workspace rules use real-path within checks; large-refund approval rule
+#   scoped by amount.
+# SPDX-License-Identifier: Apache-2.0
 # Example AgentGate policy.
 # AgentGate evaluates EVERY rule and the most restrictive match wins:
 #   deny > require_approval > redact > allow   (ties: first in file)

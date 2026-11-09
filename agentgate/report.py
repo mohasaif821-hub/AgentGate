@@ -1,3 +1,8 @@
+# Modified for AgentGate by Mohammed Jadulhaqq, 2026.
+# Based on mcp-gate (https://github.com/rsh1k/mcp-gate), Copyright 2026 The mcp-gate Authors.
+# AgentGate changes in this file:
+#   Flags records made in monitor mode; project name updated.
+# SPDX-License-Identifier: Apache-2.0
 """Report: turn the audit log into a compliance-evidence summary.
 
 The same enforcement stream that blocks bad calls is the evidence an auditor

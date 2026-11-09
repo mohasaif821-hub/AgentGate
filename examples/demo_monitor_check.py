@@ -1,3 +1,5 @@
+# AgentGate. Copyright 2026 Mohammed Jadulhaqq.
+# SPDX-License-Identifier: Apache-2.0
 """Self-check for AgentGate MONITOR mode, without Claude Desktop.
 
 Run after demo_setup.py (it does NOT touch your Claude Desktop config):

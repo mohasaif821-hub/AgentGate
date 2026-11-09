@@ -1,3 +1,9 @@
+# Modified for AgentGate by Mohammed Jadulhaqq, 2026.
+# Based on mcp-gate (https://github.com/rsh1k/mcp-gate), Copyright 2026 The mcp-gate Authors.
+# AgentGate changes in this file:
+#   Generic agent-facing denial and approval messages; AgentGate error codes
+#   outside the JSON-RPC reserved range.
+# SPDX-License-Identifier: Apache-2.0
 """Enforcement: turning a Decision into a concrete action on the wire.
 
 The engine decides; this module enacts. It knows about JSON-RPC shapes (because

@@ -1,3 +1,5 @@
+# AgentGate. Copyright 2026 Mohammed Jadulhaqq.
+# SPDX-License-Identifier: Apache-2.0
 """AgentGate: where AgentGate's controls meet NCA, SAMA and OWASP.
 
 This is the ONE source of truth for the regulatory mapping. The `controls`

@@ -1,3 +1,9 @@
+# Modified for AgentGate by Mohammed Jadulhaqq, 2026.
+# Based on mcp-gate (https://github.com/rsh1k/mcp-gate), Copyright 2026 The mcp-gate Authors.
+# AgentGate changes in this file:
+#   Signed expiry and token id; timestamp consistency and lifetime-cap
+#   checks; signing helpers for revocation and approvals.
+# SPDX-License-Identifier: Apache-2.0
 """Agent identity: agents as first-class security principals.
 
 The research is blunt about this: most orgs run agents on shared service

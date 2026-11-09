@@ -1,3 +1,9 @@
+# Modified for AgentGate by Mohammed Jadulhaqq, 2026.
+# Based on mcp-gate (https://github.com/rsh1k/mcp-gate), Copyright 2026 The mcp-gate Authors.
+# AgentGate changes in this file:
+#   Tests for every AgentGate addition (precedence, paths, hiding, monitor
+#   mode, identity, revocation, approval, dashboard, regulatory mapping).
+# SPDX-License-Identifier: Apache-2.0
 """Test suite for AgentGate.
 
 These tests are the real mechanism for driving the false-positive rate down:
@@ -1762,6 +1768,45 @@ def test_regulatory_wording_makes_no_compliance_claim():
     for claim in ("complies with", "is compliant", "fully compliant", "prevents prompt injection",
                   "ac-06", "ac-6"):
         assert claim not in text, claim
+
+
+# ---- AgentGate: licence notices --------------------------------------------
+
+def test_every_source_file_carries_a_licence_notice():
+    """Apache-2.0: changed files say they were changed; NOTICE keeps the original."""
+    from pathlib import Path
+    repo = Path(__file__).resolve().parent.parent
+    exempt = {"evaluation/scenarios.py"}   # frozen by its SHA-256 hash; covered by NOTICE
+    unchanged_upstream = {"agentgate/decision.py", "agentgate/errors.py", "agentgate/policy.py",
+                          "agentgate/session.py", "examples/fake_server.py"}
+    for p in list(repo.glob("agentgate/*.py")) + list(repo.glob("examples/*.py")) + \
+            list(repo.glob("evaluation/*.py")) + list(repo.glob("tests/*.py")):
+        rel = p.relative_to(repo).as_posix()
+        if rel in exempt or rel in unchanged_upstream:
+            continue
+        head = "\n".join(p.read_text(encoding="utf-8").splitlines()[:8])
+        assert "SPDX-License-Identifier: Apache-2.0" in head, rel
+        assert ("Modified for AgentGate" in head) != ("AgentGate. Copyright" in head), rel
+    # NOTICE may grow, but the original mcp-gate notice must stay, first and intact.
+    notice = (repo / "NOTICE").read_text(encoding="utf-8")
+    original = ("mcp-gate\nCopyright 2026 The mcp-gate Authors\n\n"
+                "This product includes software developed by the mcp-gate project\n"
+                "(https://github.com/rsh1k/mcp-gate).")
+    assert notice.startswith(original)
+    assert "Copyright 2026 Mohammed Jadulhaqq, for the modifications and additions" in notice
+
+
+def test_upstream_archive_is_unchanged():
+    """The archived mcp-gate files must stay exactly as their authors wrote them."""
+    import hashlib, re as _re
+    from pathlib import Path
+    archive = Path(__file__).resolve().parent.parent / "docs" / "upstream-archive"
+    about = (archive / "ABOUT-THIS-ARCHIVE.md").read_text(encoding="utf-8")
+    listed = dict(_re.findall(r"\| `([^`]+)` \| `([0-9a-f]{64})` \|", about))
+    present = {p.name for p in archive.iterdir() if p.name != "ABOUT-THIS-ARCHIVE.md"}
+    assert set(listed) == present, (set(listed) ^ present)
+    for name, digest in listed.items():
+        assert hashlib.sha256((archive / name).read_bytes()).hexdigest() == digest, name
 
 
 # ---- runner ----------------------------------------------------------------

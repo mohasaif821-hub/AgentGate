@@ -1,3 +1,5 @@
+# AgentGate. Copyright 2026 Mohammed Jadulhaqq.
+# SPDX-License-Identifier: Apache-2.0
 """Set up the AgentGate + Claude Desktop demo on this computer.
 
 Run once from the AgentGate folder:

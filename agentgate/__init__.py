@@ -1,3 +1,8 @@
+# Modified for AgentGate by Mohammed Jadulhaqq, 2026.
+# Based on mcp-gate (https://github.com/rsh1k/mcp-gate), Copyright 2026 The mcp-gate Authors.
+# AgentGate changes in this file:
+#   Project name updated to AgentGate.
+# SPDX-License-Identifier: Apache-2.0
 """AgentGate: a runtime policy-enforcement proxy for the Model Context Protocol.
 
 AgentGate sits on the tool-call path between an MCP client (the agent host) and an

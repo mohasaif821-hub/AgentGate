@@ -1,3 +1,10 @@
+# Modified for AgentGate by Mohammed Jadulhaqq, 2026.
+# Based on mcp-gate (https://github.com/rsh1k/mcp-gate), Copyright 2026 The mcp-gate Authors.
+# AgentGate changes in this file:
+#   Monitor mode with mandatory confirmation; token lifetime cap; revocation
+#   list; human-approval options; revoke, approver and dashboard commands;
+#   least-privilege warnings in check; NCA/SAMA/OWASP output in controls.
+# SPDX-License-Identifier: Apache-2.0
 """Command-line interface for AgentGate.
 
 Subcommands:

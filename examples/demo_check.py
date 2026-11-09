@@ -1,3 +1,5 @@
+# AgentGate. Copyright 2026 Mohammed Jadulhaqq.
+# SPDX-License-Identifier: Apache-2.0
 """Self-check for the AgentGate demo, without Claude Desktop.
 
 Run after demo_setup.py:

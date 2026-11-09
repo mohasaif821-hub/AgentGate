@@ -1,3 +1,10 @@
+# Modified for AgentGate by Mohammed Jadulhaqq, 2026.
+# Based on mcp-gate (https://github.com/rsh1k/mcp-gate), Copyright 2026 The mcp-gate Authors.
+# AgentGate changes in this file:
+#   Refuses to start without a valid identity; re-checks identity and
+#   revocation on every request; filters the tool list per role; holds calls
+#   for approval on worker threads; audits identity refusals.
+# SPDX-License-Identifier: Apache-2.0
 """Stdio proxy: gate an MCP server that speaks over stdin/stdout.
 
 Architecture (stdio transport):

@@ -1,3 +1,9 @@
+# Modified for AgentGate by Mohammed Jadulhaqq, 2026.
+# Based on mcp-gate (https://github.com/rsh1k/mcp-gate), Copyright 2026 The mcp-gate Authors.
+# AgentGate changes in this file:
+#   Project name updated; this NIST/NCCoE/OWASP map is inherited and was not
+#   re-verified (see regulatory.py).
+# SPDX-License-Identifier: Apache-2.0
 """Compliance mapping: how agentgate controls map to published frameworks.
 
 This module exists so an enterprise security or GRC team can answer "which

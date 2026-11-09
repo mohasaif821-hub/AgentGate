@@ -1,3 +1,5 @@
+# AgentGate. Copyright 2026 Mohammed Jadulhaqq.
+# SPDX-License-Identifier: Apache-2.0
 """Run the AgentGate evaluation (scenarios.py) and write a report.
 
     python evaluation/run_eval.py                 # report only

@@ -1,3 +1,5 @@
+# AgentGate. Copyright 2026 Mohammed Jadulhaqq.
+# SPDX-License-Identifier: Apache-2.0
 """AgentGate approval service: a local page where a human approves or rejects.
 
 Run it in its OWN terminal, apart from the agent:

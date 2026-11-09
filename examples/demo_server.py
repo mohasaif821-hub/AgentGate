@@ -1,3 +1,5 @@
+# AgentGate. Copyright 2026 Mohammed Jadulhaqq.
+# SPDX-License-Identifier: Apache-2.0
 """AgentGate demo tool server (MCP over stdio, Python standard library only).
 
 This is the "real tool" that sits BEHIND AgentGate in the Claude Desktop demo.

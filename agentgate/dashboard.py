@@ -1,3 +1,5 @@
+# AgentGate. Copyright 2026 Mohammed Jadulhaqq.
+# SPDX-License-Identifier: Apache-2.0
 """AgentGate dashboard: one static HTML page built from the audit log.
 
     agentgate dashboard --audit audit.jsonl --out dashboard.html [--lang ar]

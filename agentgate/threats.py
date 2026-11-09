@@ -1,3 +1,8 @@
+# Modified for AgentGate by Mohammed Jadulhaqq, 2026.
+# Based on mcp-gate (https://github.com/rsh1k/mcp-gate), Copyright 2026 The mcp-gate Authors.
+# AgentGate changes in this file:
+#   Project name updated to AgentGate.
+# SPDX-License-Identifier: Apache-2.0
 """Threat scanner: heuristic detection of injection & dangerous arguments.
 
 The NIST NCCoE concept paper on AI agent identity & authorization (Feb 2026)

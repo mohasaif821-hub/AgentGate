@@ -1,7 +1,13 @@
+# Modified for AgentGate by Mohammed Jadulhaqq, 2026.
+# Based on mcp-gate (https://github.com/rsh1k/mcp-gate), Copyright 2026 The mcp-gate Authors.
+# AgentGate changes in this file:
+#   Project name, command and metadata updated to AgentGate.
+# SPDX-License-Identifier: Apache-2.0
 [project]
 name = "agentgate"
 version = "0.3.1"
-description = "Runtime policy-enforcement proxy for MCP tool calls, with NIST-aligned audit & threat scanning"
+description = "AgentGate: least-privilege authorization layer between AI agents and their MCP tools"
+authors = [{ name = "mohasaif821-hub" }]
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
@@ -20,6 +26,9 @@ dependencies = []  # core has ZERO required deps; stdlib only
 yaml = ["pyyaml>=6.0"]   # only needed to load .yaml policies (JSON works without)
 crypto = ["cryptography>=42.0"]  # Ed25519 asymmetric agent identity
 dev = ["pytest>=7.0", "pyyaml>=6.0", "cryptography>=42.0"]
+
+[project.urls]
+Homepage = "https://github.com/mohasaif821-hub/AgentGate"
 
 [project.scripts]
 agentgate = "agentgate.cli:main"
