@@ -388,6 +388,28 @@ separation: that needs the approval service on another OS account or device.
 Masked values (passwords and the like) are not shown to the approver.
 
 
+### Regulatory mapping: NCA, SAMA, OWASP (AgentGate)
+
+`docs/regulatory-mapping.md` maps AgentGate to NCA ECC-2:2024, the SAMA Cyber
+Security Framework and the OWASP Top 10 for Agentic Applications 2026, each
+kept separate. Every row gives the official control number and text, where it
+is in the official source, a support status (Supported / Partially Supported /
+Not Supported / Not Verified), the evidence (tests, evaluation scenarios,
+files), whether that evidence was verified, and what AgentGate does NOT cover.
+
+AgentGate **supports** these controls; it does not make an organisation
+compliant. Most rows are "Partially Supported" on purpose: AgentGate only sees
+tool calls that pass through it.
+
+```bash
+mcp-gate controls --framework NCA                     # read it in the terminal
+mcp-gate controls --format markdown --out docs/regulatory-mapping.md   # regenerate the doc
+```
+
+The document is generated from `mcpgate/regulatory.py`; a test fails if the
+two differ, if a status contradicts its evidence, or if any named test,
+scenario or file does not exist.
+
 ### Dashboard (AgentGate)
 
 ```bash
