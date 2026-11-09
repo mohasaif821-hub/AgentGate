@@ -388,6 +388,25 @@ separation: that needs the approval service on another OS account or device.
 Masked values (passwords and the like) are not shown to the approver.
 
 
+### Dashboard (AgentGate)
+
+```bash
+mcp-gate dashboard --audit audit.jsonl --out dashboard.html          # English
+mcp-gate dashboard --audit audit.jsonl --out dashboard-ar.html --lang ar   # Arabic
+```
+
+One static HTML page built from the audit log: audit-chain integrity (and a
+warning if it was edited), allowed / denied / needed-approval counts, identity
+refusals, records made in monitor mode, breakdowns by agent, tool and rule,
+the human-approval funnel, and the latest 50 decisions.
+
+It is a file, not a server, so it opens no port; run the command again to
+refresh it. On purpose it never shows token ids, approval ids, argument or
+chain hashes, rule reason texts or file paths. Rule ids are shown so the
+operator can see *why* a call was decided; keep the file on the machine.
+Everything from the log is HTML-escaped and a strict Content-Security-Policy
+allows no scripts and no external requests.
+
 ### Evaluation (AgentGate)
 
 `python evaluation/run_eval.py` plays 68 scenarios (32 clear violations, 19
