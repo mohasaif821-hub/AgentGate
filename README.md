@@ -387,6 +387,24 @@ or open the page. This is practical protection within our model, not full
 separation: that needs the approval service on another OS account or device.
 Masked values (passwords and the like) are not shown to the approver.
 
+
+### Evaluation (AgentGate)
+
+`python evaluation/run_eval.py` plays 68 scenarios (32 clear violations, 19
+ambiguous tricks, 17 legitimate requests; some are Windows-only) against the
+real AgentGate in a throw-away folder. Expected outcomes were written and
+frozen (SHA-256 in the report) before the first run and are not adjusted
+afterwards. A scenario passes only if AgentGate's reply, the tool server's
+evidence log (did the tool run?) and the audit log all match.
+
+Reports: `evaluation/results/report-posix.md`, `report-windows.md`.
+CI runs it with `--gate` (fails below clear >= 98%, ambiguous >= 80%).
+
+Known finding: a **hard link** placed inside the workspace that points to a
+file outside it is allowed (scenario A09). Real-path checks resolve symbolic
+links and junctions but cannot see hard links. Creating one needs write access
+to the workspace, which the demo agent does not have.
+
 ---
 
 ## Verification
