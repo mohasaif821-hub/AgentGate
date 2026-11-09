@@ -14,6 +14,7 @@ Example (wrapping a filesystem MCP server):
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 
@@ -92,16 +93,77 @@ def _cmd_controls(args: argparse.Namespace) -> int:
 def _cmd_token(args: argparse.Namespace) -> int:
     if args.scheme == "ed25519":
         from .identity import Ed25519Signer
-        if not args.private_key:
-            print("ed25519 tokens require --private-key (hex)", file=sys.stderr)
+        key_hex = _private_key_hex(args)
+        if not key_hex:
+            print("ed25519 tokens require --private-key-file or --private-key (hex)",
+                  file=sys.stderr)
             return 1
-        signer = Ed25519Signer(bytes.fromhex(args.private_key))
-        print(signer.sign(args.agent_id, args.role or [], None))
+        signer = Ed25519Signer(bytes.fromhex(key_hex))
+        print(signer.sign(args.agent_id, args.role or [], None, ttl_seconds=args.ttl))
     else:
         if not args.secret:
             print("hmac tokens require --secret", file=sys.stderr)
             return 1
-        print(issue_token(args.secret.encode(), args.agent_id, args.role or [], None))
+        print(issue_token(args.secret.encode(), args.agent_id, args.role or [], None,
+                          ttl_seconds=args.ttl))
+    return 0
+
+
+def _private_key_hex(args: argparse.Namespace) -> str | None:
+    """--private-key-file keeps the key off the command line (process list)."""
+    path = getattr(args, "private_key_file", None)
+    if path:
+        from pathlib import Path
+        return Path(path).read_text(encoding="utf-8").strip()
+    return args.private_key
+
+
+def _signer_from_args(args: argparse.Namespace):
+    if args.scheme == "ed25519":
+        from .identity import Ed25519Signer
+        key_hex = _private_key_hex(args)
+        if not key_hex:
+            raise ValueError("ed25519 needs --private-key-file or --private-key (hex)")
+        signer = Ed25519Signer(bytes.fromhex(key_hex))
+        return signer, signer.verifier()
+    from .identity import HmacVerifier
+    if not args.secret:
+        raise ValueError("hmac needs --secret")
+    signer = HmacVerifier(args.secret.encode())
+    return signer, signer
+
+
+def _cmd_revoke(args: argparse.Namespace) -> int:
+    """AgentGate: create or extend the signed revocation list."""
+    from pathlib import Path
+    from .identity import IdentityError, token_id_of
+    from .revocation import build_list, parse_list, write_atomic
+    try:
+        signer, verifier = _signer_from_args(args)
+        ids = list(args.token_id or [])
+        ids += [token_id_of(t) for t in (args.token or [])]
+    except (OSError, ValueError, IdentityError) as exc:
+        print(f"revoke failed: {exc}", file=sys.stderr)
+        return 1
+    path = Path(args.list)
+    if path.exists():
+        if args.init:
+            print(f"revoke failed: {path} already exists (drop --init)", file=sys.stderr)
+            return 1
+        try:
+            version, revoked = parse_list(path.read_text(encoding="utf-8"), verifier)
+        except (OSError, IdentityError) as exc:
+            print(f"revoke failed: current list can't be trusted: {exc}", file=sys.stderr)
+            return 1
+        version += 1
+    elif args.init:
+        version, revoked = 1, frozenset()
+    else:
+        print(f"revoke failed: {path} not found (use --init to create it)", file=sys.stderr)
+        return 1
+    doc = build_list(signer, version, sorted(revoked | set(ids)))
+    write_atomic(path, json.dumps(doc, indent=2) + "\n")
+    print(f"revocation list {path}: version {version}, {len(doc['revoked'])} revoked token(s)")
     return 0
 
 
@@ -163,13 +225,37 @@ def _cmd_run(args: argparse.Namespace) -> int:
             return 1
     elif args.secret:
         secret = args.secret.encode()
+        from .identity import HmacVerifier
+        verifier = HmacVerifier(secret)
 
     if args.token_max_age < 0:
         print("refusing to start: --token-max-age must be >= 0", file=sys.stderr)
         return 1
-    proxy = StdioProxy(gate, args.upstream, identity_secret=secret,
-                       verifier=verifier, session_id=args.session,
-                       max_age_seconds=args.token_max_age)
+
+    revocation = None
+    if args.revocation_list or args.revocation_state:
+        if not (args.revocation_list and args.revocation_state):
+            print("refusing to start: --revocation-list and --revocation-state "
+                  "must be given together", file=sys.stderr)
+            return 1
+        if verifier is None:
+            print("refusing to start: a revocation list needs --pubkey or --secret",
+                  file=sys.stderr)
+            return 1
+        from .identity import IdentityError
+        from .revocation import RevocationChecker
+        try:
+            revocation = RevocationChecker(args.revocation_list, args.revocation_state,
+                                           verifier)
+        except IdentityError as exc:
+            print(f"refusing to start: revocation list check failed: {exc}",
+                  file=sys.stderr)
+            return 3
+
+    proxy = StdioProxy(gate, args.upstream, verifier=verifier,
+                       session_id=args.session,
+                       max_age_seconds=args.token_max_age,
+                       revocation=revocation)
     return proxy.run()
 
 
@@ -199,9 +285,25 @@ def build_parser() -> argparse.ArgumentParser:
     pt.add_argument("--scheme", choices=["hmac", "ed25519"], default="hmac")
     pt.add_argument("--secret", help="HMAC secret (for --scheme hmac)")
     pt.add_argument("--private-key", help="Ed25519 private key hex (for --scheme ed25519)")
+    pt.add_argument("--private-key-file", help="file holding the Ed25519 private key hex "
+                    "(safer than --private-key)")
     pt.add_argument("--agent-id", required=True)
     pt.add_argument("--role", action="append", help="repeatable")
+    pt.add_argument("--ttl", type=float, default=3600.0,
+                    help="token lifetime in seconds (default 3600); signed into the token")
     pt.set_defaults(func=_cmd_token)
+
+    prv = sub.add_parser("revoke", help="AgentGate: add tokens to the signed revocation list")
+    prv.add_argument("--list", required=True, help="revocation list file")
+    prv.add_argument("--scheme", choices=["hmac", "ed25519"], default="ed25519")
+    prv.add_argument("--secret", help="HMAC secret (for --scheme hmac)")
+    prv.add_argument("--private-key", help="Ed25519 private key hex (the token signing key)")
+    prv.add_argument("--private-key-file", help="file holding the Ed25519 private key hex "
+                     "(safer than --private-key)")
+    prv.add_argument("--token", action="append", help="a token to revoke (repeatable)")
+    prv.add_argument("--token-id", action="append", help="a token id (jti) to revoke (repeatable)")
+    prv.add_argument("--init", action="store_true", help="create a new, empty list (version 1)")
+    prv.set_defaults(func=_cmd_revoke)
 
     pk = sub.add_parser("keygen", help="generate an Ed25519 keypair (needs [crypto])")
     pk.set_defaults(func=_cmd_keygen)
@@ -215,9 +317,13 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--pubkey", help="Ed25519 public key hex (asymmetric; recommended)")
     pr.add_argument("--session", default="stdio-session")
     pr.add_argument("--token-max-age", type=float, default=3600.0,
-                    help="seconds an agent identity token stays valid after it is "
-                         "issued (default 3600). With --pubkey/--secret, a missing, "
-                         "forged or older token makes AgentGate refuse to start")
+                    help="longest token lifetime accepted, in seconds (default 3600). "
+                         "Tokens are re-checked on every request; a missing, forged, "
+                         "expired, revoked or too-long-lived token is refused")
+    pr.add_argument("--revocation-list", help="AgentGate: signed revocation list, "
+                    "checked on every request")
+    pr.add_argument("--revocation-state", help="AgentGate: file that remembers the last "
+                    "trusted list version (refuses rollback); keep it apart from the list")
     pr.add_argument("--mode", choices=["enforce", "monitor"], default="enforce",
                     help="enforce (default) blocks per policy; monitor only records "
                          "what WOULD happen and blocks NOTHING (test environments only)")

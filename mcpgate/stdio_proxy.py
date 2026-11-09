@@ -40,6 +40,7 @@ import sys
 import threading
 from typing import Any
 
+from .decision import Decision, Effect
 from .enforce import blocked_response
 from .gate import Gate
 from .identity import (
@@ -54,7 +55,8 @@ class StdioProxy:
                  identity_secret: bytes | None = None,
                  verifier: IdentityVerifier | None = None,
                  session_id: str = "stdio-session",
-                 max_age_seconds: float | None = 3600.0) -> None:
+                 max_age_seconds: float | None = 3600.0,
+                 revocation: Any = None) -> None:
         self.gate = gate
         self.upstream_cmd = upstream_cmd
         # A verifier (HMAC, Ed25519, or custom) takes precedence; otherwise fall
@@ -64,6 +66,9 @@ class StdioProxy:
         self.verifier = verifier
         self.session_id = session_id
         self.max_age_seconds = max_age_seconds
+        # AgentGate: optional RevocationChecker, consulted on every request.
+        self.revocation = revocation
+        self._token: str | None = None
         self._proc: subprocess.Popen[bytes] | None = None
         self._identity: AgentIdentity = AgentIdentity.anonymous()
         # ids of tools/list requests sent upstream whose responses must be filtered
@@ -88,7 +93,54 @@ class StdioProxy:
         token = os.environ.get("MCPGATE_AGENT_TOKEN")
         if not token:
             raise IdentityError("identity is required but MCPGATE_AGENT_TOKEN is not set")
-        return self.verifier.verify(token, self.max_age_seconds)
+        self._token = token
+        return self._verify_token()
+
+    def _verify_token(self) -> AgentIdentity:
+        """Signature, times and revocation of the session's token. Raises."""
+        if self._token is None:
+            raise IdentityError("no identity token")
+        identity = self.verifier.verify(self._token, self.max_age_seconds)
+        if self.revocation is not None:
+            self.revocation.check(identity.token_id)
+        return identity
+
+    def identity_still_valid(self) -> bool:
+        """AgentGate: re-checked before EVERY request, not just at start.
+
+        A token that expires or is revoked during a session stops working on
+        the next request. Any error while checking counts as invalid.
+        """
+        return self._identity_problem() is None
+
+    def _identity_problem(self) -> str | None:
+        """None if the identity is still valid, else why not (operator-only)."""
+        if self.verifier is None:
+            return None
+        try:
+            self._verify_token()
+            return None
+        except Exception as exc:  # fail closed on anything unexpected
+            log.warning("request refused: agent identity is no longer valid: %s", exc)
+            return str(exc) or type(exc).__name__
+
+    def _audit_identity_refusal(self, message: dict[str, Any], problem: str) -> None:
+        """Tool calls refused for identity reasons go in the audit log too."""
+        params = message.get("params") or {}
+        tool = params.get("name", "") if isinstance(params, dict) else ""
+        args = params.get("arguments") or {} if isinstance(params, dict) else {}
+        try:
+            self.gate.audit.record(
+                session_id=self.session_id, identity=self._identity,
+                tool=str(tool), args=args if isinstance(args, dict) else {},
+                decision=Decision(effect=Effect.DENY, rule_id="__identity__",
+                                  reason=f"agent identity no longer valid: {problem}"),
+                policy_name=self.gate.engine.policy.name,
+                policy_version=self.gate.engine.policy.version,
+                mode="enforce",  # identity is enforced even in monitor mode
+            )
+        except Exception:
+            log.exception("could not write the identity refusal to the audit log")
 
     def run(self) -> int:
         try:
@@ -98,6 +150,9 @@ class StdioProxy:
             return 3
         log.info("agent identity: %s (roles: %s)", identity.agent_id,
                  ", ".join(sorted(identity.roles)) or "none")
+        if self.verifier is not None and self.revocation is None:
+            log.warning("no revocation list configured: a stolen token keeps "
+                        "working until it expires")
         self._identity = identity
         self._proc = subprocess.Popen(
             self.upstream_cmd,
@@ -135,6 +190,18 @@ class StdioProxy:
             message = json.loads(line)
         except json.JSONDecodeError:
             log.error("dropping non-JSON line from client")
+            return
+
+        problem = self._identity_problem()
+        if problem is not None:
+            # Requests get the same generic denial as a policy block; anything
+            # else (notifications, responses) is dropped. Nothing is forwarded.
+            # Enforced in monitor mode too: identity is not a policy decision.
+            if isinstance(message, dict) and message.get("method") == "tools/call":
+                self._audit_identity_refusal(message, problem)
+            if isinstance(message, dict) and "method" in message \
+                    and message.get("id") is not None:
+                self._write_client(blocked_response(message["id"]))
             return
 
         outcome = self.gate.handle_request(message, identity, self.session_id)

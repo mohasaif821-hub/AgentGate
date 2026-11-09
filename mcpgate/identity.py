@@ -31,7 +31,9 @@ reject a downgrade (e.g. refuse hmac tokens when it expects ed25519).
 #  - Bind tokens to the transport to stop replay/relay (cf. MCP SEP-1932 DPoP /
 #    SEP-1933 Workload Identity Federation). This module verifies the token's
 #    authenticity and freshness, not its channel binding.
-#  - Rotate keys; honor `issued_at` staleness; keep `max_age_seconds` short.
+#  - Rotate keys; keep token lifetimes and `max_age_seconds` short.
+#  - AgentGate: tokens carry signed iat/exp/jti; revocation by jti lives in
+#    revocation.py and is checked on every request by the proxy.
 """
 
 from __future__ import annotations
@@ -39,6 +41,8 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import math
+import secrets
 import time
 from dataclasses import dataclass
 from typing import Protocol
@@ -62,6 +66,9 @@ class AgentIdentity:
     roles: frozenset[str]
     issued_at: float
     claims: dict[str, str]
+    # AgentGate: signed expiry time and unique token id (used for revocation).
+    expires_at: float = 0.0
+    token_id: str = ""
 
     @staticmethod
     def anonymous() -> "AgentIdentity":
@@ -86,12 +93,28 @@ class AgentIdentity:
 # Token (de)serialization shared by all verifiers
 # --------------------------------------------------------------------------
 
+# AgentGate token payload (v2). Every field is inside the signed bytes, so no
+# one can extend a token's life, change its roles, or swap its id without
+# signing a new token.
+DEFAULT_TOKEN_TTL_SECONDS = 3600.0
+# Tolerated clock difference between the token issuer and AgentGate.
+CLOCK_SKEW_SECONDS = 60.0
+_MAX_TOKEN_ID_LEN = 128
+
+
 def _encode_payload(agent_id: str, roles: list[str],
-                    claims: dict[str, str] | None) -> bytes:
+                    claims: dict[str, str] | None, *,
+                    ttl_seconds: float = DEFAULT_TOKEN_TTL_SECONDS,
+                    issued_at: float | None = None,
+                    token_id: str | None = None) -> bytes:
+    iat = time.time() if issued_at is None else float(issued_at)
     payload = {
+        "v": 2,
         "agent_id": agent_id,
         "roles": sorted(roles),
-        "issued_at": time.time(),
+        "iat": iat,
+        "exp": iat + float(ttl_seconds),
+        "jti": token_id or secrets.token_hex(16),
         "claims": claims or {},
     }
     return json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
@@ -107,17 +130,65 @@ def _split_token(token: str) -> tuple[bytes, str, str]:
     return raw, scheme, sig
 
 
+def _number(payload: dict, key: str) -> float:
+    value = payload.get(key)
+    if isinstance(value, bool) or not isinstance(value, (int, float)) \
+            or not math.isfinite(value):
+        raise IdentityError("invalid identity token")
+    return float(value)
+
+
+def check_token_times(iat: float, exp: float, max_age_seconds: float | None,
+                      now: float | None = None) -> None:
+    """AgentGate: the token's own times must be consistent AND within limits.
+
+    The issuer chooses iat/exp, so they are not trusted blindly:
+      * issued in the future (beyond clock skew)  -> rejected
+      * expires at or before it was issued         -> rejected
+      * lifetime (exp - iat) above the maximum     -> rejected, so an issuer
+        cannot exceed AgentGate's limit by picking a far-away exp or an
+        odd iat
+      * already expired                            -> rejected
+    """
+    now = time.time() if now is None else now
+    if iat > now + CLOCK_SKEW_SECONDS:
+        raise IdentityError("identity token is issued in the future")
+    if exp <= iat:
+        raise IdentityError("identity token has inconsistent times")
+    if max_age_seconds is not None and exp - iat > max_age_seconds:
+        raise IdentityError("identity token lifetime exceeds the allowed maximum")
+    if now >= exp:
+        raise IdentityError("identity token expired")
+
+
 def _payload_to_identity(raw: bytes, max_age_seconds: float | None) -> AgentIdentity:
-    payload = json.loads(raw.decode())
-    if max_age_seconds is not None:
-        age = time.time() - float(payload["issued_at"])
-        if age > max_age_seconds:
-            raise IdentityError(f"identity token expired ({age:.0f}s old)")
+    """Parse a SIGNED payload. Anything unexpected is an IdentityError."""
+    try:
+        payload = json.loads(raw.decode())
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise IdentityError("invalid identity token") from exc
+    if not isinstance(payload, dict) or payload.get("v") != 2:
+        # Tokens from before AgentGate v2 have no exp/jti: refused.
+        raise IdentityError("unsupported identity token format (issue a new token)")
+    agent_id = payload.get("agent_id")
+    roles = payload.get("roles", [])
+    jti = payload.get("jti")
+    claims = payload.get("claims", {})
+    if not isinstance(agent_id, str) or not agent_id \
+            or not isinstance(roles, list) or not all(isinstance(r, str) for r in roles) \
+            or not isinstance(jti, str) or not 0 < len(jti) <= _MAX_TOKEN_ID_LEN \
+            or not isinstance(claims, dict):
+        raise IdentityError("invalid identity token")
+    iat = _number(payload, "iat")
+    exp = _number(payload, "exp")
+    check_token_times(iat, exp, max_age_seconds)
     return AgentIdentity(
-        agent_id=str(payload["agent_id"]),
-        roles=frozenset(payload.get("roles", [])),
-        issued_at=float(payload["issued_at"]),
-        claims=dict(payload.get("claims", {})),
+        agent_id=agent_id,
+        roles=frozenset(roles),
+        issued_at=iat,
+        claims={str(k): str(v) for k, v in claims.items()},
+        expires_at=exp,
+        token_id=jti,
     )
 
 
@@ -142,10 +213,18 @@ class HmacVerifier:
         self._secret = secret
 
     def sign(self, agent_id: str, roles: list[str],
-             claims: dict[str, str] | None = None) -> str:
-        raw = _encode_payload(agent_id, roles, claims)
+             claims: dict[str, str] | None = None, **times) -> str:
+        raw = _encode_payload(agent_id, roles, claims, **times)
         sig = hmac.new(self._secret, raw, hashlib.sha256).hexdigest()
         return f"{raw.hex()}.{self.scheme}.{sig}"
+
+    def sign_bytes(self, data: bytes) -> str:
+        return hmac.new(self._secret, data, hashlib.sha256).hexdigest()
+
+    def verify_bytes(self, data: bytes, sig_hex: str) -> None:
+        if not isinstance(sig_hex, str) or not hmac.compare_digest(
+                self.sign_bytes(data), sig_hex):
+            raise IdentityError("signature mismatch")
 
     def verify(self, token: str,
                max_age_seconds: float | None = None) -> AgentIdentity:
@@ -205,6 +284,13 @@ class Ed25519Verifier:
             raise IdentityError("ed25519 signature verification failed") from exc
         return _payload_to_identity(raw, max_age_seconds)
 
+    def verify_bytes(self, data: bytes, sig_hex: str) -> None:
+        _, InvalidSignature = self._crypto()
+        try:
+            self._pub.verify(bytes.fromhex(sig_hex), data)
+        except (InvalidSignature, ValueError, TypeError) as exc:
+            raise IdentityError("ed25519 signature verification failed") from exc
+
 
 class Ed25519Signer:
     """Holds a PRIVATE key to mint tokens. Lives with the agent, NOT the proxy.
@@ -240,10 +326,16 @@ class Ed25519Signer:
         return pub.hex()
 
     def sign(self, agent_id: str, roles: list[str],
-             claims: dict[str, str] | None = None) -> str:
-        raw = _encode_payload(agent_id, roles, claims)
+             claims: dict[str, str] | None = None, **times) -> str:
+        raw = _encode_payload(agent_id, roles, claims, **times)
         sig = self._priv.sign(raw).hex()
         return f"{raw.hex()}.{self.scheme}.{sig}"
+
+    def sign_bytes(self, data: bytes) -> str:
+        return self._priv.sign(data).hex()
+
+    def verifier(self) -> "Ed25519Verifier":
+        return Ed25519Verifier.from_public_hex(self.public_key_hex())
 
 
 # --------------------------------------------------------------------------
@@ -251,9 +343,21 @@ class Ed25519Signer:
 # --------------------------------------------------------------------------
 
 def issue_token(secret: bytes, agent_id: str, roles: list[str],
-                claims: dict[str, str] | None = None) -> str:
+                claims: dict[str, str] | None = None, **times) -> str:
     """Mint an HMAC-signed identity token. Convenience wrapper."""
-    return HmacVerifier(secret).sign(agent_id, roles, claims)
+    return HmacVerifier(secret).sign(agent_id, roles, claims, **times)
+
+
+def token_id_of(token: str) -> str:
+    """Read a token's id WITHOUT verifying it (for building revocation lists)."""
+    raw, _, _ = _split_token(token)
+    try:
+        jti = json.loads(raw.decode()).get("jti")
+    except (UnicodeDecodeError, json.JSONDecodeError, AttributeError) as exc:
+        raise IdentityError("invalid identity token") from exc
+    if not isinstance(jti, str) or not jti:
+        raise IdentityError("token has no id (issue a new token)")
+    return jti
 
 
 def verify_token(secret: bytes, token: str,

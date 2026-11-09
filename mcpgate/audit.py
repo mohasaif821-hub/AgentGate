@@ -71,6 +71,9 @@ class AuditRecord:
     # AgentGate: "enforce" or "monitor". In monitor mode the decision was
     # recorded but NOT applied, so an auditor must be able to tell them apart.
     mode: str = "enforce"
+    # AgentGate: id of the token the agent used, so a misused token can be
+    # found in the log and revoked. Empty for anonymous agents.
+    token_id: str = ""
 
     def body(self) -> dict[str, Any]:
         # Everything EXCEPT this record's own hash. The hash is computed over
@@ -88,6 +91,7 @@ class AuditRecord:
             "policy_version": self.policy_version,
             "prev_hash": self.prev_hash,
             "mode": self.mode,
+            "token_id": self.token_id,
         }
 
     def compute_hash(self) -> str:
@@ -137,6 +141,7 @@ class AuditLog:
                 policy_version=policy_version,
                 prev_hash=self._last_hash,
                 mode=mode,
+                token_id=getattr(identity, "token_id", ""),
             )
             rec_hash = rec.compute_hash()
             line = json.dumps({**rec.body(), "hash": rec_hash},
