@@ -1,249 +1,131 @@
 # AgentGate
 
-A least-privilege authorization layer between AI agents and their tools.
-AgentGate sits on the Model Context Protocol (MCP) tool-call path and checks
-every call against policy, the agent's signed identity and, for sensitive
-calls, a human approval, before the tool runs. Everything is written to a
-tamper-evident audit log.
+[![tests](https://github.com/mohasaif821-hub/AgentGate/actions/workflows/ci.yml/badge.svg)](https://github.com/mohasaif821-hub/AgentGate/actions/workflows/ci.yml)
 
-> This README is an interim version. The full documentation and report are
-> being written.
+**A least-privilege authorization layer between AI agents and their tools.**
 
-## Built on mcp-gate
+AgentGate sits on the Model Context Protocol (MCP) tool-call path. Every tool
+call an agent makes is checked against the policy, the agent's signed identity
+and, when the policy asks for it, a human approval, before the tool runs. Every
+decision goes to a hash-chained audit log.
 
-AgentGate is built on the open-source [mcp-gate](https://github.com/rsh1k/mcp-gate)
-project (Apache-2.0) and substantially extends it. Credit and licence notices
-are in [`NOTICE`](NOTICE); the original mcp-gate documentation is kept,
-unchanged, in [`docs/upstream-archive/`](docs/upstream-archive/ABOUT-THIS-ARCHIVE.md).
+```mermaid
+flowchart LR
+    A["Agent<br/>(Claude Desktop)"] -- "tool call" --> G["AgentGate<br/>1. identity, every request<br/>2. policy, deny overrides<br/>3. human approval when the policy asks"]
+    G -- "allowed calls only" --> T["Tool server"]
+    G <-- "shared folder, no network port" --> P["Approval service<br/>local page, signs its decisions"]
+    G -- "writes" --> L["Audit log<br/>hash chain"]
+```
 
-## Install (from this repository)
+## Why
 
-AgentGate is **not** published on PyPI. Do not `pip install agentgate` from
-PyPI: a package with that name, if one exists, is not this project. Install
-from a clone of this repository:
+Agents read, delete and run things on their own, and usually with every
+permission of the user who started them. An agent tricked by text hidden in a
+file makes its mistake with all of those permissions. AgentGate gives each
+agent only what its role needs, and checks every call separately.
+
+## What it does
+
+| | |
+|---|---|
+| **Deny by default, deny overrides** | A call no rule allows is refused; a matching deny rule always wins, whatever the rule order. |
+| **Real-path checks** | Paths are checked after `..`, symbolic links and junctions are resolved (not hard links, see [Limits](#limits)). |
+| **Least privilege by role** | Each role gets its own tools and paths; tools a role can never use are hidden from it. |
+| **Signed identity, checked on every request** | Ed25519 tokens with signed expiry and id, a lifetime cap, and a signed revocation list that refuses rollback. |
+| **Human approval bound to one request** | A signed decision from a separate approval service, valid for that exact request, once. It never changes the agent's permissions. |
+| **Generic denials** | The agent learns nothing about why it was refused; the details are in the audit log only. |
+| **Hash-chained audit log** | Safe with several AgentGate processes on one log; a call that can't be logged doesn't run. |
+| **Dashboard** | One static HTML page from the audit log, in English and Arabic. |
+| **Regulatory mapping** | NCA ECC-2:2024, SAMA CSF and OWASP Agentic Top 10 2026, generated from one data file and guarded by tests. |
+
+![AgentGate dashboard built from the demo's audit log](docs/images/dashboard.png)
+
+## Results
+
+68 scenarios, written and frozen before the first run, played against the real
+AgentGate. A scenario passes only when AgentGate's reply, the tool server's own
+log and the audit log all agree.
+
+| | Windows | Linux | Target |
+|---|---|---|---|
+| Clear violations refused | 32 / 32 | 32 / 32 | ≥ 98% |
+| Ambiguous cases refused | 18 / 19 | 10 / 11 | ≥ 80% |
+| Legitimate requests allowed | 17 / 17 | 15 / 15 | — |
+| False positives | 0% | 0% | — |
+
+The one miss is a known finding: a **hard link** placed inside the workspace
+(scenario A09). The evaluation runs on GitHub on every change.
+
+## Quickstart
+
+AgentGate is **not** on PyPI. Do not `pip install agentgate` from PyPI: a
+package with that name, if one exists, is not this project.
 
 ```bash
 git clone https://github.com/mohasaif821-hub/AgentGate
 cd AgentGate
 python -m pip install -e ".[crypto,yaml]"
+
+python examples/demo_setup.py        # demo folder with dummy data, keys and tokens
+python examples/demo_check.py        # 41 checks of the demo
+python evaluation/run_eval.py        # the 68 scenarios
 ```
 
-## Quickstart
+Connect the demo to Claude Desktop (quit it first; the old config is backed up):
 
 ```bash
-# validate a policy (also warns about grants to every agent)
-python -m agentgate.cli check --policy examples/policy.yaml
-
-# full local demo with Claude Desktop (see examples/demo_setup.py)
-python examples/demo_setup.py
-python examples/demo_check.py
-
-# evaluation: 68 frozen scenarios, report in evaluation/results/
-python evaluation/run_eval.py
-
-# dashboard from an audit log
-python -m agentgate.cli dashboard --audit audit.jsonl --out dashboard.html
+python examples/demo_setup.py --install-claude-config
 ```
 
-After `pip install -e .` the same commands are available as `agentgate ...`.
-
-## Monitor mode — no protection
-
-> **WARNING: in monitor mode NO calls are blocked or changed.**
-> Use it only in an isolated test environment with dummy data.
-
-`run --mode monitor` evaluates and audits every call exactly as enforce mode
-would, then forwards it **untouched**: nothing is denied, redacted, held for
-approval or hidden from the tool list. Its only purpose is to try a policy and
-see what it *would* block before turning it on.
-
-- It will not start without the explicit flag
-  `--i-understand-this-disables-protection`.
-- It prints a warning when it starts, and every audit record carries
-  `"mode": "monitor"`, so a monitored period can never pass for a protected one
-  (the `report` command flags it too).
-- AgentGate cannot tell whether an environment is isolated or the data is real.
-  That responsibility stays with whoever runs it. The software is provided
-  "AS IS", without warranty, under the Apache 2.0 license.
-
----
-
-## Least privilege by identity
-
-Each agent gets only the tools and paths its role needs; everything else is
-denied by default and hidden from that agent's tool list.
-
-- **No valid identity, no start.** When `--pubkey` or `--secret` is set, the
-  proxy refuses to start if `AGENTGATE_AGENT_TOKEN` is missing, forged or
-  expired (exit code 3). It never falls back to running as "anonymous".
-- **Signed expiry and id.** Each token carries `iat`, `exp` and a unique `jti`
-  inside the signed bytes, so its life can't be extended or its id changed
-  without a new signature. Tokens without them (older format) are refused.
-- **Times must make sense.** A token issued in the future (beyond 60 s of
-  clock skew), one that expires before it was issued, or one whose lifetime
-  (`exp - iat`) is longer than `--token-max-age SECONDS` (default 3600) is
-  refused, so the issuer can't get past the limit with odd timestamps.
-- **Checked on every request**, not just at start: signature, expiry and
-  revocation. A token that expires or is revoked mid-session is refused on the
-  next request, and the refusal is audited with rule `__identity__`. Identity
-  is enforced in monitor mode too.
-- **Revocation by token id:** `--revocation-list FILE --revocation-state FILE`.
-  The list is signed with the token signing key and names revoked `jti`s, so
-  revoking one token leaves the agent's other tokens working. A missing,
-  unreadable, edited or wrongly signed list means every request is refused.
-  Rotating the key stays the emergency option, not the daily one.
-
-  ```bash
-  agentgate revoke --list revoked.json --private-key-file key.hex --init
-  agentgate revoke --list revoked.json --private-key-file key.hex --token <TOKEN>
-  ```
-- **Rollback refused.** The version number in the list alone can't stop someone
-  putting back an older signed list, so the last trusted version is also kept
-  in the separate `--revocation-state` file (and in memory) and any older list
-  is refused.
-- **`check` warns about broad grants:** any non-deny rule that applies to every
-  agent (`agents: ["*"]` with no `require_roles`) is printed as a
-  `WARNING`. It is a warning, not an error: the exit code stays 0.
-
-The demo (`examples/demo_setup.py`) uses two identities:
-
-| Agent | Roles | May do |
-|---|---|---|
-| reader-agent | reader | list + read inside the workspace |
-| admin-agent | reader, admin | the same, plus delete inside the workspace |
-
-Claude Desktop is given the **reader** token, so the agent used every day holds
-the least privilege. `examples/demo_check.py` tests both identities and the
-missing, forged and expired token cases.
-
-**Limits.** The proxy holds only the public key, so editing Claude Desktop's
-config cannot *mint* a token with more roles. But a token is a bearer token:
-anyone who can read an existing token (for example the admin token in the demo's
-`keys/` folder) can *copy* it until it expires or is revoked. Keep tokens and
-the private key readable only by the user who needs them, and keep
-`--token-max-age` short.
-
-The signed list stops **unsigned** changes. It does not resist an attacker who
-already has the rights of the account or machine running AgentGate: on a
-single Windows account, such an attacker can change the state file and the
-list together, change the clock, or read the private key. Real separation
-needs a different OS account or another machine.
-
-
-## Human approval bound to one request
-
-A rule with `effect: require_approval` holds the call until a person decides.
-
-- **One exact request.** The approval covers a fingerprint of the agent, its
-  token id, the tool, the exact arguments and the policy version. Any change
-  (one character, another token) is a different request.
-- **Used once, no new permissions.** An approval runs that request once and is
-  gone. It never changes what the agent may do.
-- **Nothing runs before a valid, signed approval.** The decision is signed by
-  a separate approval service with its own key. AgentGate holds only that
-  public key (`--approver-pubkey`), which must differ from the token key.
-- **Hold, then pending.** AgentGate holds the call (`--approval-hold`, default
-  45 s). We measured that linked Claude sessions give up after 60 s *without
-  telling the server*, so the hold stays below that. If no one decides in time,
-  the agent gets `-31902 ... Retry the same request after it is approved.` and
-  the approval stays open for `--approval-ttl` (default 600 s, never renewed).
-  The identical retry then runs the frozen copy of the arguments, once.
-- **Checked again right before running:** identity, expiry, revocation, policy.
-- **At most `--max-pending` (default 3) waiting approvals per agent**, so a
-  flood of requests can't wear the person down.
-- **No network port in AgentGate.** It shares only a folder with the approval
-  service (`--approval-queue`). A forged decision fails its signature and is
-  audited; deleting files can only cause refusals. A restart voids all
-  pending approvals.
-- **Every step is audited** (`requested`, `approved_executed`, `rejected`,
-  `hold_timeout`, `expired`, `too_many_pending`, `invalid_decision_ignored`,
-  ...), with the request fingerprint and the approver id, never the secrets.
-
-The approval page (`agentgate approver --queue DIR --private-key-file KEY`)
-listens on `127.0.0.1` only, prints a one-time login code in its own terminal
-(5 wrong codes stop it), uses an HttpOnly SameSite=Strict session, checks the
-CSRF token, `Origin` and `Host` on every POST, escapes everything it shows,
-masks secret-looking argument values, forbids scripts and framing with a strict
-CSP, and recomputes each request's fingerprint so a request whose shown details
-were altered can't be approved.
-
-**Error codes.** AgentGate answers with its own codes, outside the JSON-RPC
-reserved range (`-32768..-32000`) as MCP asks for application errors:
-`-31901` blocked, `-31902` needs approval. (agentgate used `-32001`/`-32002`;
-`-32002` means "resource not found" in MCP.)
-
-**Waiting.** The hold is a short wait, not a long one: linked Claude sessions
-were measured to wait 45 s and 55 s but give up at 120 s, without telling the
-server. Anything longer works only through the identical retry within
-`--approval-ttl`. Long synchronous waits are not supported.
-
-**Limits.** On a single Windows account, a process running as you (an agent
-with a terminal tool, say) could read the login code or the approval key file,
-or open the page. This is practical protection within our model, not full
-separation: that needs the approval service on another OS account or device.
-Masked values (passwords and the like) are not shown to the approver.
-
-
-## Regulatory mapping: NCA, SAMA, OWASP
-
-`docs/regulatory-mapping.md` maps AgentGate to NCA ECC-2:2024, the SAMA Cyber
-Security Framework and the OWASP Top 10 for Agentic Applications 2026, each
-kept separate. Every row gives the official control number and text, where it
-is in the official source, a support status (Supported / Partially Supported /
-Not Supported / Not Verified), the evidence (tests, evaluation scenarios,
-files), whether that evidence was verified, and what AgentGate does NOT cover.
-
-AgentGate **supports** these controls; it does not make an organisation
-compliant. Most rows are "Partially Supported" on purpose: AgentGate only sees
-tool calls that pass through it.
+Approval page and dashboard (`<demo>` is the demo folder, `AgentGateDemo` in
+your home folder by default):
 
 ```bash
-agentgate controls --framework NCA                     # read it in the terminal
-agentgate controls --format markdown --out docs/regulatory-mapping.md   # regenerate the doc
+agentgate approver --queue <demo>/approvals --private-key-file <demo>/keys/approver_private_key.hex
+agentgate dashboard --audit <demo>/audit.jsonl --out dashboard.html            # --lang ar for Arabic
 ```
 
-The document is generated from `agentgate/regulatory.py`; a test fails if the
-two differ, if a status contradicts its evidence, or if any named test,
-scenario or file does not exist.
+> **Monitor mode blocks nothing.** `run --mode monitor` only records what
+> would have happened. It needs `--i-understand-this-disables-protection` and
+> is for an isolated test environment with dummy data only.
 
-## Dashboard
+## Limits
 
-```bash
-agentgate dashboard --audit audit.jsonl --out dashboard.html          # English
-agentgate dashboard --audit audit.jsonl --out dashboard-ar.html --lang ar   # Arabic
-```
+- **It does not detect or prevent prompt injection by itself.** It limits what
+  a tricked agent can do with its tools, but doesn't know the agent was tricked
+  and doesn't stop misuse of an allowed tool.
+- **It doesn't protect paths that bypass it,** such as a shell or another MCP
+  server the agent can reach directly.
+- **Time-of-check to time-of-use (TOCTOU) risk remains** between the path check
+  and the tool opening the file.
+- **The audit log is tamper-evident, not tamper-proof.** Edits and reordering
+  show; lines cut from the end, or a fully rebuilt chain, do not.
+- A **hard link** in the workspace bypasses the path check (A09). AgentGate, the
+  approval service and the agent on **one OS account** are not truly separated.
+  No MFA and no SIEM integration.
 
-One static HTML page built from the audit log: audit-chain integrity (and a
-warning if it was edited), allowed / denied / needed-approval counts, identity
-refusals, records made in monitor mode, breakdowns by agent, tool and rule,
-the human-approval funnel, and the latest 50 decisions.
+The full list is in the [report](docs/REPORT.md#limits).
 
-It is a file, not a server, so it opens no port; run the command again to
-refresh it. On purpose it never shows token ids, approval ids, argument or
-chain hashes, rule reason texts or file paths. Rule ids are shown so the
-operator can see *why* a call was decided; keep the file on the machine.
-Everything from the log is HTML-escaped and a strict Content-Security-Policy
-allows no scripts and no external requests.
+## Documentation
 
-## Evaluation
+- [Final report](docs/REPORT.md): principles, architecture, evaluation, findings, limits, future work
+- [Using AgentGate](docs/USAGE.md): every protection and its options (identity, revocation, approval, audit log, monitor mode)
+- [Regulatory mapping](docs/regulatory-mapping.md): NCA, SAMA and OWASP, row by row
+- [Evaluation reports](evaluation/results/): Windows and Linux
+- [Changelog](CHANGELOG.md) · [Security policy](SECURITY.md) · [Contributing](CONTRIBUTING.md)
 
-`python evaluation/run_eval.py` plays 68 scenarios (32 clear violations, 19
-ambiguous tricks, 17 legitimate requests; some are Windows-only) against the
-real AgentGate in a throw-away folder. Expected outcomes were written and
-frozen (SHA-256 in the report) before the first run and are not adjusted
-afterwards. A scenario passes only if AgentGate's reply, the tool server's
-evidence log (did the tool run?) and the audit log all match.
+## Built on mcp-gate
 
-Reports: `evaluation/results/report-posix.md`, `report-windows.md`.
-CI runs it with `--gate` (fails below clear >= 98%, ambiguous >= 80%).
-
-Known finding: a **hard link** placed inside the workspace that points to a
-file outside it is allowed (scenario A09). Real-path checks resolve symbolic
-links and junctions but cannot see hard links. Creating one needs write access
-to the workspace, which the demo agent does not have.
-
----
+AgentGate is built on the open-source [mcp-gate](https://github.com/rsh1k/mcp-gate)
+project (Apache-2.0) and substantially extends it: the code is now 3.3 times the
+original's size, and about 77% of its lines were added or changed in AgentGate
+(measured with [`tools/compare_upstream.py`](tools/compare_upstream.py)).
+Credit and licence notices are in [`NOTICE`](NOTICE); the original mcp-gate
+documentation is kept unchanged in
+[`docs/upstream-archive/`](docs/upstream-archive/ABOUT-THIS-ARCHIVE.md).
 
 ## Licence
 
 Apache-2.0, see [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).
+Copyright 2026 Mohammed Jadulhaqq, for the modifications and additions made in
+AgentGate.

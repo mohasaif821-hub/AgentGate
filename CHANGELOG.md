@@ -25,6 +25,7 @@ unchanged, in `docs/upstream-archive/CHANGELOG.md`.
 - Generic agent-facing denial and approval messages (details stay in the audit).
 - AgentGate error codes `-31901` / `-31902`, outside the JSON-RPC reserved range.
 - Project, package and command renamed to `agentgate`.
+- Final README, report (`docs/REPORT.md`) and operator guide (`docs/USAGE.md`).
 
 ### Fixed
 - Container licence label said MIT (stale in mcp-gate); now Apache-2.0.

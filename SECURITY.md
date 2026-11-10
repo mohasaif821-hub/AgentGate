@@ -15,5 +15,8 @@ audit records without detection.
 
 Known and documented, so not new findings: a hard link inside the workspace
 (evaluation scenario A09), the single-OS-account limits of the approval page
-and keys, and tool access paths that do not go through AgentGate. See
-`docs/regulatory-mapping.md` and the evaluation reports.
+and keys, tool access paths that do not go through AgentGate, the
+time-of-check to time-of-use gap between the path check and the tool, and
+audit-log lines cut from the end (the chain is tamper-evident, not
+tamper-proof). AgentGate does not detect prompt injection by itself. See the
+limits in `docs/REPORT.md` and the evaluation reports.
