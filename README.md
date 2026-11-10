@@ -48,8 +48,8 @@ log and the audit log all agree.
 
 | | Windows | Linux | Target |
 |---|---|---|---|
-| Clear violations refused | 32 / 32 | 32 / 32 | ≥ 98% |
-| Ambiguous cases refused | 18 / 19 | 10 / 11 | ≥ 80% |
+| Clear violations stopped | 32 / 32 | 32 / 32 | ≥ 98% |
+| Ambiguous cases handled correctly | 18 / 19 | 10 / 11 | ≥ 80% |
 | Legitimate requests allowed | 17 / 17 | 15 / 15 | — |
 | False positives | 0% | 0% | — |
 

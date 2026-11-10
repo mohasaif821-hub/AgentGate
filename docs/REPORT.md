@@ -115,8 +115,8 @@ gives the type:
 
 | Letter | Scenario type | Count |
 |---|---|---|
-| C | Clear violation, must be refused | 32 |
-| A | Ambiguous case with a trick, such as a twisted path | 19 |
+| C | Clear violation, must not get through (refused, held for approval, or never started) | 32 |
+| A | Ambiguous case with a trick, such as a twisted path; 18 must be refused, 1 held for approval | 19 |
 | B | Legitimate request, must be allowed | 17 |
 
 ## Built on mcp-gate
@@ -177,8 +177,8 @@ Credit to the original authors is kept in three ways:
 
 ## Evaluation results
 
-Both targets were met on both systems: 100% of clear violations were refused,
-the ambiguous cases reached 94.7% on Windows, and there were no false positives.
+Both targets were met on both systems: none of the clear violations got through,
+the ambiguous cases were handled correctly in 94.7% of cases on Windows, and there were no false positives.
 One real vulnerability was found, and it is reported as it is.
 
 | Measure | Windows | Linux | Target |
