@@ -1842,6 +1842,10 @@ def test_dashboard_flags_tampering_and_arabic():
     open(path, "w", encoding="utf-8").write("\n".join(lines) + "\nnot json\n")
     page = generate_dashboard(path)
     assert "integrity: FAILED" in page and "Unreadable lines: 1" in page
+    # the chain can't see records cut from the end: never claim "no deletions"
+    from agentgate.dashboard import TEXT as _T
+    for t in _T.values():
+        assert "deletion" not in t["integrity_ok"] and "حذف" not in t["integrity_ok"]
     ar = generate_dashboard(path, "ar")
     assert 'dir="rtl"' in ar and "فشل الفحص" in ar
 

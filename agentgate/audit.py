@@ -283,6 +283,8 @@ class AuditLog:
 
         Detects: edited records, reordering, deletions, and a broken prev_hash
         link. This is what you run to PROVE the log wasn't tampered with.
+        AgentGate note: records cut from the END leave a valid, shorter chain;
+        only an externally kept copy of the last hash can show that.
         """
         if not self.path.exists():
             return True, "empty log"

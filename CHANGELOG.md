@@ -37,6 +37,12 @@ unchanged, in `docs/upstream-archive/CHANGELOG.md`.
 - Approval page: a refused POST now reads its (size-capped) body before
   answering, so on Windows the client gets the 403 instead of a reset
   connection. Found by running the unit tests on Windows.
+- Dashboard no longer says "no deletions": the hash chain cannot show records
+  cut from the end of the log. The banner now says what the chain proves.
+
+### Added (tools)
+- `tools/compare_upstream.py`: reproduces the "built on mcp-gate" size
+  numbers in the report. Not part of AgentGate and not counted itself.
 
 ### Known limitations
 - A hard link placed inside the workspace bypasses the path check (scenario A09).
