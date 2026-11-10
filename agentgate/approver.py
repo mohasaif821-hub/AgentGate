@@ -277,6 +277,11 @@ def _make_handler(svc: ApproverService):
             self._send(200, _page(body))
 
         def do_POST(self):
+            # Read the (size-capped) body first, even for requests about to be
+            # refused: closing a socket with unread data makes Windows reset
+            # the connection, so the client never sees the 403. Nothing in the
+            # form is acted on before the checks below.
+            form = self._form()
             if not self._host_ok():
                 return self._send(403, _page("<p>Forbidden host.</p>"))
             if self.headers.get("Origin", "") not in svc.allowed_origins():
@@ -284,7 +289,6 @@ def _make_handler(svc: ApproverService):
             site = self.headers.get("Sec-Fetch-Site")
             if site is not None and site not in ("same-origin", "none"):
                 return self._send(403, _page("<p>Forbidden.</p>"))
-            form = self._form()
             if self.path == "/login":
                 sid = svc.login(form.get("code", ""))
                 if sid is None:

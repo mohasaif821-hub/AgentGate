@@ -2,6 +2,9 @@
 # Based on mcp-gate (https://github.com/rsh1k/mcp-gate), Copyright 2026 The mcp-gate Authors.
 # AgentGate changes in this file:
 #   Records the mode (enforce/monitor) and the token id of each decision.
+#   Safe with several AgentGate processes on one log (file lock, continues
+#   from the file's real last record) and refuses to write when the log was
+#   replaced, emptied or removed under a running process (AuditLogError).
 # SPDX-License-Identifier: Apache-2.0
 """Audit log: tamper-evident, append-only, and compliance-shaped.
 
@@ -28,8 +31,11 @@ choices make this more than a log file:
 #    to an external write-once medium (e.g. a transparency log, object storage
 #    with object-lock, or a notary service). The chain proves internal
 #    consistency; the external anchor proves nothing was truncated.
-#  - This file-based sink is single-writer. For concurrency, serialize writes
-#    through one process or use an append-only DB.
+#  - AgentGate: several processes may write the same file. Each write takes
+#    a lock on <log>.lock and continues from the file's real last record. If
+#    the file was replaced (renamed away, deleted, emptied, or cut back) while
+#    a process was running, that process refuses to write (AuditLogError)
+#    instead of breaking the chain, and the call is refused.
 """
 
 from __future__ import annotations
@@ -39,6 +45,7 @@ import json
 import os
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
@@ -47,6 +54,74 @@ from .decision import Decision
 from .identity import AgentIdentity
 
 GENESIS = "0" * 64
+LOCK_TIMEOUT = 10.0  # seconds to wait for another process holding the log
+
+
+class AuditLogError(RuntimeError):
+    """AgentGate: the audit log can't be written safely. Callers refuse the call."""
+
+
+@contextmanager
+def _file_lock(lock_path: Path, timeout: float = LOCK_TIMEOUT):
+    """AgentGate: exclusive lock between processes, on a separate lock file."""
+    deadline = time.monotonic() + timeout
+    fh = open(lock_path, "a+b")
+    try:
+        if os.name == "nt":
+            import msvcrt
+            while True:
+                try:
+                    fh.seek(0)
+                    msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise AuditLogError("audit log is locked by another process")
+                    time.sleep(0.02)
+            try:
+                yield
+            finally:
+                fh.seek(0)
+                msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            while True:
+                try:
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise AuditLogError("audit log is locked by another process")
+                    time.sleep(0.02)
+            try:
+                yield
+            finally:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+    finally:
+        fh.close()
+
+
+def _last_line(path: Path) -> str | None:
+    """AgentGate: the last non-empty line, read from the end of the file."""
+    with path.open("rb") as fh:
+        fh.seek(0, os.SEEK_END)
+        end = fh.tell()
+        chunk = 4096
+        while True:
+            start = max(0, end - chunk)
+            fh.seek(start)
+            data = fh.read(end - start).rstrip(b"\r\n \t")
+            if not data:
+                return None
+            nl = data.rfind(b"\n")
+            if nl != -1 or start == 0:
+                return data[nl + 1:].decode("utf-8").strip() or None
+            chunk *= 2
+
+
+def _file_id(st: os.stat_result) -> tuple[int, int] | None:
+    # st_ino can be 0 on some file systems; then only the record check applies.
+    return (st.st_dev, st.st_ino) if st.st_ino else None
 
 
 def _sha256_hex(data: bytes) -> str:
@@ -111,7 +186,10 @@ class AuditLog:
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
         self._lock = threading.Lock()
+        self._lock_path = self.path.with_name(self.path.name + ".lock")
         self._seq, self._last_hash = self._recover_state()
+        # AgentGate: which file this process is writing, once it exists.
+        self._file = _file_id(self.path.stat()) if self.path.exists() else None
 
     def _recover_state(self) -> tuple[int, str]:
         """On startup, read the tail to continue the chain across restarts."""
@@ -128,11 +206,50 @@ class AuditLog:
         rec = json.loads(last_line)
         return int(rec["seq"]) + 1, str(rec["hash"])
 
+    def _sync_with_file(self) -> None:
+        """AgentGate: continue from the file's real last record, or refuse.
+
+        Called with the file lock held, right before each write. Another
+        AgentGate process may have appended since our last write; that is fine
+        and the chain simply continues from its record. But if the file we were
+        writing was renamed away, deleted, emptied or cut back, writing would
+        break the chain, so we refuse instead.
+        """
+        known = self._file is not None or self._seq > 0
+        if not self.path.exists():
+            if known:
+                raise AuditLogError("audit log file is missing; restart AgentGate")
+            return
+        fid = _file_id(self.path.stat())
+        if self._file is not None and fid is not None and fid != self._file:
+            raise AuditLogError("audit log file was replaced; restart AgentGate")
+        line = _last_line(self.path)
+        if line is None:
+            if self._seq > 0:
+                raise AuditLogError("audit log file was emptied; restart AgentGate")
+            return
+        try:
+            rec = json.loads(line)
+            stored = rec.pop("hash")
+            ok = _sha256_hex(json.dumps(rec, separators=(",", ":"),
+                                        sort_keys=True).encode()) == stored
+            tail_seq = int(rec["seq"])
+        except Exception as exc:
+            raise AuditLogError(f"last audit record is unreadable: {exc}") from None
+        if not ok:
+            raise AuditLogError("last audit record does not verify")
+        if tail_seq < self._seq - 1 or (tail_seq == self._seq - 1
+                                        and stored != self._last_hash):
+            raise AuditLogError("audit log no longer continues this process's "
+                                "chain; restart AgentGate")
+        self._seq, self._last_hash = tail_seq + 1, stored
+
     def record(self, *, session_id: str, identity: AgentIdentity, tool: str,
                args: dict[str, Any], decision: Decision,
                policy_name: str, policy_version: str,
                mode: str = "enforce") -> AuditRecord:
-        with self._lock:
+        with self._lock, _file_lock(self._lock_path):
+            self._sync_with_file()
             rec = AuditRecord(
                 seq=self._seq,
                 timestamp=time.time(),
@@ -156,6 +273,7 @@ class AuditLog:
                 fh.write(line + "\n")
                 fh.flush()
                 os.fsync(fh.fileno())
+            self._file = _file_id(self.path.stat())
             self._seq += 1
             self._last_hash = rec_hash
             return rec

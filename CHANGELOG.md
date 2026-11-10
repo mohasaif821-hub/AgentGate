@@ -28,6 +28,15 @@ unchanged, in `docs/upstream-archive/CHANGELOG.md`.
 
 ### Fixed
 - Container licence label said MIT (stale in mcp-gate); now Apache-2.0.
+- Audit log with several writers: each write now takes a file lock and
+  continues from the file's real last record. A process whose log was renamed,
+  deleted, emptied or cut back while it ran refuses to write, and the call is
+  refused, instead of breaking the hash chain. A call (or an approved call)
+  that can't be audited no longer runs, in monitor mode too. Found when an
+  archived log was renamed while Claude Desktop's AgentGate was still running.
+- Approval page: a refused POST now reads its (size-capped) body before
+  answering, so on Windows the client gets the 403 instead of a reset
+  connection. Found by running the unit tests on Windows.
 
 ### Known limitations
 - A hard link placed inside the workspace bypasses the path check (scenario A09).

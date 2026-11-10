@@ -369,6 +369,129 @@ def test_audit_chain_survives_restart():
         assert sum(1 for _ in a2) == 2
 
 
+# ---- AgentGate: several processes, and a log replaced under a running one --
+
+def _x_call(gate, ident, i):
+    return gate.handle_request(
+        {"jsonrpc": "2.0", "id": i, "method": "tools/call",
+         "params": {"name": "x", "arguments": {"n": i}}}, ident, "s")
+
+
+def test_audit_two_writers_on_one_log_keep_one_chain():
+    # Claude Desktop's AgentGate and a demo check can run at the same time on
+    # the same log. Interleaved writes must still form one valid chain.
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "audit.jsonl")
+        eng = make_engine({"default_effect": "deny",
+                           "rules": [{"id": "a", "effect": "allow", "tools": ["x"]}]})
+        ident = support_agent()
+        g1, g2 = Gate(eng, AuditLog(path)), Gate(eng, AuditLog(path))
+        for i in range(6):
+            _x_call(g1 if i % 2 == 0 else g2, ident, i)
+        ok, msg = AuditLog(path).verify()
+        assert ok, msg
+        assert [r["seq"] for r in AuditLog(path)] == list(range(6))
+
+
+def test_audit_two_writers_in_parallel_threads_keep_one_chain():
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "audit.jsonl")
+        eng = make_engine({"default_effect": "deny",
+                           "rules": [{"id": "a", "effect": "allow", "tools": ["x"]}]})
+        ident = support_agent()
+        gates = [Gate(eng, AuditLog(path)) for _ in range(3)]
+        threads = [threading.Thread(target=lambda g=g: [_x_call(g, ident, i) for i in range(10)])
+                   for g in gates]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        ok, msg = AuditLog(path).verify()
+        assert ok, msg
+        assert sum(1 for _ in AuditLog(path)) == 30
+
+
+def test_audit_log_renamed_under_running_process_refuses_instead_of_breaking_chain():
+    # What happened on the demo machine: the log was renamed (archived) while
+    # Claude Desktop's AgentGate was still running; another process started a
+    # new log; the old process then appended with its old counter (seq gap).
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "audit.jsonl")
+        eng = make_engine({"default_effect": "deny",
+                           "rules": [{"id": "a", "effect": "allow", "tools": ["x"]}]})
+        ident = support_agent()
+        old = Gate(eng, AuditLog(path))
+        for i in range(5):
+            _x_call(old, ident, i)
+        os.rename(path, os.path.join(d, "audit-archive-1.jsonl"))
+        new = Gate(eng, AuditLog(path))
+        for i in range(2):
+            _x_call(new, ident, i)
+        out = _x_call(old, ident, 99)
+        assert out.forward_message is None                        # nothing runs
+        assert out.response_to_agent["error"]["code"] == -31901   # generic denial
+        ok, msg = AuditLog(path).verify()
+        assert ok, msg                                            # new log intact
+        assert sum(1 for _ in AuditLog(path)) == 2
+        assert AuditLog(os.path.join(d, "audit-archive-1.jsonl")).verify()[0]
+
+
+def test_audit_log_deleted_or_emptied_under_running_process_refuses():
+    from agentgate.audit import AuditLogError
+    for damage in ("delete", "empty"):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "audit.jsonl")
+            eng = make_engine({"default_effect": "deny",
+                               "rules": [{"id": "a", "effect": "allow", "tools": ["x"]}]})
+            ident = support_agent()
+            g = Gate(eng, AuditLog(path))
+            _x_call(g, ident, 1)
+            if damage == "delete":
+                os.remove(path)
+            else:
+                open(path, "w").close()
+            out = _x_call(g, ident, 2)
+            assert out.forward_message is None, damage
+            try:
+                g.audit.record(session_id="s", identity=ident, tool="x", args={},
+                               decision=out.decision, policy_name="p", policy_version="1")
+                raise AssertionError(f"{damage}: write should be refused")
+            except AuditLogError:
+                pass
+
+
+def test_audit_log_cut_back_or_last_record_edited_refuses():
+    for damage in ("truncate", "edit"):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "audit.jsonl")
+            eng = make_engine({"default_effect": "deny",
+                               "rules": [{"id": "a", "effect": "allow", "tools": ["x"]}]})
+            ident = support_agent()
+            g = Gate(eng, AuditLog(path))
+            for i in range(3):
+                _x_call(g, ident, i)
+            with open(path) as fh:
+                lines = fh.readlines()
+            if damage == "truncate":
+                lines = lines[:1]
+            else:
+                lines[-1] = lines[-1].replace('"allow"', '"deny"')
+            with open(path, "w") as fh:
+                fh.writelines(lines)
+            assert _x_call(g, ident, 9).forward_message is None, damage
+
+
+def test_monitor_mode_refuses_call_that_cannot_be_audited():
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "audit.jsonl")
+        eng = make_engine({"default_effect": "deny",
+                           "rules": [{"id": "a", "effect": "allow", "tools": ["x"]}]})
+        g = Gate(eng, AuditLog(path), mode="monitor")
+        _x_call(g, support_agent(), 1)
+        os.remove(path)
+        assert _x_call(g, support_agent(), 2).forward_message is None
+
+
 # ---- gate end-to-end behavior ---------------------------------------------
 
 def make_gate(policy_dict, **kw) -> Gate:
@@ -1425,6 +1548,16 @@ def test_approval_during_hold_runs_frozen_copy_once():
     # identical request again: needs a NEW approval (used once)
     assert _hold(gate, who, _read_call(2)).approval_id != p.approval_id
     assert gate.audit.verify()[0]
+
+
+def test_approved_call_is_refused_if_it_cannot_be_audited():
+    gate, mgr, who = _approval_setup()
+    p = _hold(gate, who, _read_call(1))
+    _decide(mgr, p)
+    verdict, approver = mgr.wait_for_decision(p, who)
+    os.remove(gate.audit.path)                     # log gone before it runs
+    res = mgr.resolve_hold(p, who, verdict, approver, None)
+    assert res.forward is None and res.respond == "blocked"
 
 
 def test_approval_rejected_or_timed_out():

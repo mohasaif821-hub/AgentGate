@@ -2,7 +2,7 @@
 # Based on mcp-gate (https://github.com/rsh1k/mcp-gate), Copyright 2026 The mcp-gate Authors.
 # AgentGate changes in this file:
 #   Monitor mode; fail-closed generic responses; integration of
-#   request-bound human approval.
+#   request-bound human approval; a call that can't be audited is refused.
 # SPDX-License-Identifier: Apache-2.0
 """Gate: the Policy Enforcement Point.
 
@@ -112,13 +112,21 @@ class Gate:
                                                arguments, identity, session_id)
 
         # Audit EVERY decision, including allows. This is the evidence trail.
-        self.audit.record(
-            session_id=session_id, identity=identity, tool=tool,
-            args=arguments, decision=decision,
-            policy_name=self.engine.policy.name,
-            policy_version=self.engine.policy.version,
-            mode=self.mode,
-        )
+        # AgentGate: if the decision can't be written, nothing runs (in monitor
+        # mode too): a call with no audit record would be invisible afterwards.
+        try:
+            self.audit.record(
+                session_id=session_id, identity=identity, tool=tool,
+                args=arguments, decision=decision,
+                policy_name=self.engine.policy.name,
+                policy_version=self.engine.policy.version,
+                mode=self.mode,
+            )
+        except Exception:
+            log.exception("could not write the audit record; refusing the call")
+            return GateOutcome(forward_message=None,
+                               response_to_agent=blocked_response(request_id),
+                               decision=decision)
 
         if self.mode == MONITOR:
             # Record what WOULD have happened, then forward the call untouched:

@@ -184,7 +184,7 @@ class ApprovalManager:
 
     # ---- audit -------------------------------------------------------------
     def _audit(self, p: Pending, event: str, effect: Effect,
-               approver_id: str = "") -> None:
+               approver_id: str = "") -> bool:
         obligations = {"approval_id": p.approval_id, "approval_event": event,
                        "request_hash": p.req_hash}
         if approver_id:
@@ -197,8 +197,10 @@ class ApprovalManager:
                                   reason=f"approval {event}", obligations=obligations),
                 policy_name=self.engine.policy.name,
                 policy_version=self.engine.policy.version, mode="enforce")
+            return True
         except Exception:
             log.exception("could not write approval event %s to the audit log", event)
+            return False
 
     # ---- request side (called by the gate) ---------------------------------
     def on_request(self, message: dict[str, Any], tool: str, arguments: dict[str, Any],
@@ -304,7 +306,9 @@ class ApprovalManager:
         if again is None or again.effect not in (Effect.REQUIRE_APPROVAL, Effect.ALLOW):
             self._close(p, "policy_changed", Effect.DENY, approver)
             return ApprovalResult(respond="blocked")
-        self._close(p, "approved_executed", Effect.ALLOW, approver)
+        if not self._close(p, "approved_executed", Effect.ALLOW, approver):
+            # Nothing runs unaudited: the approval is used up and the call refused.
+            return ApprovalResult(respond="blocked")
         try:
             self.engine.commit_budget(p.tool, p.arguments, p.decision, p.session_id)
         except Exception:
@@ -315,7 +319,7 @@ class ApprovalManager:
         return ApprovalResult(forward=msg)
 
     def _close(self, p: Pending, outcome: str, effect: Effect,
-               approver: str = "") -> None:
+               approver: str = "") -> bool:
         p.outcome = outcome
         self._by_id.pop(p.approval_id, None)
         if self._by_hash.get(p.req_hash) == p.approval_id:
@@ -328,7 +332,7 @@ class ApprovalManager:
                 pass
             except OSError:
                 log.warning("could not remove %s", path)
-        self._audit(p, outcome, effect, approver)
+        return self._audit(p, outcome, effect, approver)
 
     def _expire(self) -> None:
         now = time.time()
