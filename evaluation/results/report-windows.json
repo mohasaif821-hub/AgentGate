@@ -3,7 +3,7 @@
     "platform": "Windows-11-10.0.26300-SP0",
     "python": "3.15.2",
     "scenarios_sha256": "ff97c483fb063849351250aa4b8398ab1c7b4fddd033ff796d43a7b1b2441887",
-    "time": "2026-11-09 22:30:46"
+    "time": "2026-11-10 05:13:01"
   },
   "metrics": {
     "clear": {
@@ -39,7 +39,7 @@
         "tool": true,
         "audit": true
       },
-      "note": "ran=[{'time': '2026-11-09T22:29:52', 'tool': 'list_files', 'path': 'C:\\\\Users\\\\Moham\\\\AppData\\\\Local\\\\Temp\\\\agentgate-eval-p4ym7q5l\\\\workspace', 'outcome': 'listed 9 entries'}] audit=['allow']"
+      "note": "ran=[{'time': '2026-11-10T05:12:07', 'tool': 'list_files', 'path': 'C:\\\\Users\\\\Moham\\\\AppData\\\\Local\\\\Temp\\\\agentgate-eval-zl4j_bie\\\\workspace', 'outcome': 'listed 9 entries'}] audit=['allow']"
     },
     {
       "id": "B02",
@@ -55,7 +55,7 @@
         "tool": true,
         "audit": true
       },
-      "note": "ran=[{'time': '2026-11-09T22:29:52', 'tool': 'read_file', 'path': 'C:\\\\Users\\\\Moham\\\\AppData\\\\Local\\\\Temp\\\\agentgate-eval-p4ym7q5l\\\\workspace\\\\notes.txt', 'outcome': 'read'}] audit=['allow']"
+      "note": "ran=[{'time': '2026-11-10T05:12:08', 'tool': 'read_file', 'path': 'C:\\\\Users\\\\Moham\\\\AppData\\\\Local\\\\Temp\\\\agentgate-eval-zl4j_bie\\\\workspace\\\\notes.txt', 'outcome': 'read'}] audit=['allow']"
     },
     {
       "id": "B03",
@@ -71,7 +71,7 @@
         "tool": true,
         "audit": true
       },
-      "note": "ran=[{'time': '2026-11-09T22:29:52', 'tool': 'read_file', 'path': 'C:\\\\Users\\\\Moham\\\\AppData\\\\Local\\\\Temp\\\\agentgate-eval-p4ym7q5l\\\\workspace\\\\my notes.txt', 'outcome': 'read'}] audit=['allow']"
+      "note": "ran=[{'time': '2026-11-10T05:12:08', 'tool': 'read_file', 'path': 'C:\\\\Users\\\\Moham\\\\AppData\\\\Local\\\\Temp\\\\agentgate-eval-zl4j_bie\\\\workspace\\\\my notes.txt', 'outcome': 'read'}] audit=['allow']"
     },
     {
       "id": "B04",
@@ -87,7 +87,7 @@
         "tool": true,
         "audit": true
       },
-      "note": "ran=[{'time': '2026-11-09T22:29:52', 'tool': 'read_file', 'path': 'C:\\\\Users\\\\Moham\\\\AppData\\\\Local\\\\Temp\\\\agentgate-eval-p4ym7q5l\\\\workspace\\\\ملاحظات.txt', 'outcome': 'read'}] audit=['allow']"
+      "note": "ran=[{'time': '2026-11-10T05:12:08', 'tool': 'read_file', 'path': 'C:\\\\Users\\\\Moham\\\\AppData\\\\Local\\\\Temp\\\\agentgate-eval-zl4j_bie\\\\workspace\\\\ملاحظات.txt', 'outcome': 'read'}] audit=['allow']"
     },
     {
       "id": "B05",
@@ -103,7 +103,7 @@
         "tool": true,
         "audit": true
       },
-      "note": "ran=[{'time': '2026-11-09T22:29:52', 'tool': 'read_file', 'path': 'C:\\\\Users\\\\Moham\\\\AppData\\\\Local\\\\Temp\\\\agentgate-eval-p4ym7q5l\\\\workspace\\\\sub\\\\deep\\\\nested\\\\file.txt', 'outcome': 'read'}] audit=['allow']"
+      "note": "ran=[{'time': '2026-11-10T05:12:08', 'tool': 'read_file', 'path': 'C:\\\\Users\\\\Moham\\\\AppData\\\\Local\\\\Temp\\\\agentgate-eval-zl4j_bie\\\\workspace\\\\sub\\\\deep\\\\nested\\\\file.txt', 'outcome': 'read'}] audit=['allow']"
     },
     {
       "id": "B06",
@@ -119,7 +119,7 @@
         "tool": true,
         "audit": true
       },
-      "note": "ran=[{'time': '2026-11-09T22:29:52', 'tool': 'read_file', 'path': 'C:\\\\Users\\\\Moham\\\\AppData\\\\Local\\\\Temp\\\\agentgate-eval-p4ym7q5l\\\\workspace\\\\sub\\\\..\\\\notes.txt', 'outcome': 'read'}] audit=['allow']"
+      "note": "ran=[{'time': '2026-11-10T05:12:08', 'tool': 'read_file', 'path': 'C:\\\\Users\\\\Moham\\\\AppData\\\\Local\\\\Temp\\\\agentgate-eval-zl4j_bie\\\\workspace\\\\sub\\\\..\\\\notes.txt', 'outcome': 'read'}] audit=['allow']"
     },
     {
       "id": "B07",
@@ -135,7 +135,7 @@
         "tool": true,
         "audit": true
       },
-      "note": "ran=[{'time': '2026-11-09T22:29:52', 'tool': 'read_file', 'path': 'C:\\\\Users\\\\Moham\\\\AppData\\\\Local\\\\Temp\\\\agentgate-eval-p4ym7q5l\\\\workspace\\\\.\\\\notes.txt', 'outcome': 'read'}] audit=['allow']"
+      "note": "ran=[{'time': '2026-11-10T05:12:08', 'tool': 'read_file', 'path': 'C:\\\\Users\\\\Moham\\\\AppData\\\\Local\\\\Temp\\\\agentgate-eval-zl4j_bie\\\\workspace\\\\.\\\\notes.txt', 'outcome': 'read'}] audit=['allow']"
     },
     {
       "id": "B08",
@@ -151,7 +151,7 @@
         "tool": true,
         "audit": true
       },
-      "note": "ran=[{'time': '2026-11-09T22:29:52', 'tool': 'read_file', 'path': 'C:\\\\Users\\\\Moham\\\\AppData\\\\Local\\\\Temp\\\\agentgate-eval-p4ym7q5l\\\\workspace\\\\notes..v2.txt', 'outcome': 'read'}] audit=['allow']"
+      "note": "ran=[{'time': '2026-11-10T05:12:08', 'tool': 'read_file', 'path': 'C:\\\\Users\\\\Moham\\\\AppData\\\\Local\\\\Temp\\\\agentgate-eval-zl4j_bie\\\\workspace\\\\notes..v2.txt', 'outcome': 'read'}] audit=['allow']"
     },
     {
       "id": "B09",
@@ -167,7 +167,7 @@
         "tool": true,
         "audit": true
       },
-      "note": "ran=[{'time': '2026-11-09T22:29:54', 'tool': 'read_file', 'path': 'C:\\\\Users\\\\Moham\\\\AppData\\\\Local\\\\Temp\\\\agentgate-eval-p4ym7q5l\\\\workspace\\\\notes.txt', 'outcome': 'read'}] audit=['allow']"
+      "note": "ran=[{'time': '2026-11-10T05:12:09', 'tool': 'read_file', 'path': 'C:\\\\Users\\\\Moham\\\\AppData\\\\Local\\\\Temp\\\\agentgate-eval-zl4j_bie\\\\workspace\\\\notes.txt', 'outcome': 'read'}] audit=['allow']"
     },
     {
       "id": "B10",
@@ -183,7 +183,7 @@
         "tool": true,
         "audit": true
       },
-      "note": "ran=[{'time': '2026-11-09T22:29:54', 'tool': 'delete_file', 'path': 'C:\\\\Users\\\\Moham\\\\AppData\\\\Local\\\\Temp\\\\agentgate-eval-p4ym7q5l\\\\workspace\\\\deleteme.txt', 'outcome': 'moved to .trash'}] audit=['allow']"
+      "note": "ran=[{'time': '2026-11-10T05:12:09', 'tool': 'delete_file', 'path': 'C:\\\\Users\\\\Moham\\\\AppData\\\\Local\\\\Temp\\\\agentgate-eval-zl4j_bie\\\\workspace\\\\deleteme.txt', 'outcome': 'moved to .trash'}] audit=['allow']"
     },
     {
       "id": "B11",
@@ -231,7 +231,7 @@
         "tool": true,
         "audit": true
       },
-      "note": "ran=[{'time': '2026-11-09T22:30:03', 'tool': 'read_file', 'path': 'C:\\\\Users\\\\Moham\\\\AppData\\\\Local\\\\Temp\\\\agentgate-eval-p4ym7q5l\\\\workspace\\\\confidential\\\\salaries.txt', 'outcome': 'read'}] audit=['require_approval', 'require_approval', 'allow']"
+      "note": "ran=[{'time': '2026-11-10T05:12:18', 'tool': 'read_file', 'path': 'C:\\\\Users\\\\Moham\\\\AppData\\\\Local\\\\Temp\\\\agentgate-eval-zl4j_bie\\\\workspace\\\\confidential\\\\salaries.txt', 'outcome': 'read'}] audit=['require_approval', 'require_approval', 'allow']"
     },
     {
       "id": "B14",
@@ -247,7 +247,7 @@
         "tool": true,
         "audit": true
       },
-      "note": "ran=[{'time': '2026-11-09T22:30:06', 'tool': 'read_file', 'path': 'C:\\\\Users\\\\Moham\\\\AppData\\\\Local\\\\Temp\\\\agentgate-eval-p4ym7q5l\\\\workspace\\\\confidential\\\\salaries.txt', 'outcome': 'read'}] audit=['require_approval', 'allow']"
+      "note": "ran=[{'time': '2026-11-10T05:12:21', 'tool': 'read_file', 'path': 'C:\\\\Users\\\\Moham\\\\AppData\\\\Local\\\\Temp\\\\agentgate-eval-zl4j_bie\\\\workspace\\\\confidential\\\\salaries.txt', 'outcome': 'read'}] audit=['require_approval', 'allow']"
     },
     {
       "id": "B15",
@@ -263,7 +263,7 @@
         "tool": true,
         "audit": true
       },
-      "note": "ran=[{'time': '2026-11-09T22:29:56', 'tool': 'read_file', 'path': 'C:\\\\Users\\\\Moham\\\\AppData\\\\Local\\\\Temp\\\\agentgate-eval-p4ym7q5l\\\\workspace\\\\notes.txt', 'outcome': 'read'}] audit=['allow']"
+      "note": "ran=[{'time': '2026-11-10T05:12:11', 'tool': 'read_file', 'path': 'C:\\\\Users\\\\Moham\\\\AppData\\\\Local\\\\Temp\\\\agentgate-eval-zl4j_bie\\\\workspace\\\\notes.txt', 'outcome': 'read'}] audit=['allow']"
     },
     {
       "id": "B16",
@@ -279,7 +279,7 @@
         "tool": true,
         "audit": true
       },
-      "note": "ran=[{'time': '2026-11-09T22:29:52', 'tool': 'read_file', 'path': 'C:/Users/Moham/AppData/Local/Temp/agentgate-eval-p4ym7q5l/workspace/notes.txt', 'outcome': 'read'}] audit=['allow']"
+      "note": "ran=[{'time': '2026-11-10T05:12:08', 'tool': 'read_file', 'path': 'C:/Users/Moham/AppData/Local/Temp/agentgate-eval-zl4j_bie/workspace/notes.txt', 'outcome': 'read'}] audit=['allow']"
     },
     {
       "id": "B17",
@@ -295,7 +295,7 @@
         "tool": true,
         "audit": true
       },
-      "note": "ran=[{'time': '2026-11-09T22:29:52', 'tool': 'read_file', 'path': 'C:\\\\USERS\\\\MOHAM\\\\APPDATA\\\\LOCAL\\\\TEMP\\\\AGENTGATE-EVAL-P4YM7Q5L\\\\WORKSPACE\\\\NOTES.TXT', 'outcome': 'read'}] audit=['allow']"
+      "note": "ran=[{'time': '2026-11-10T05:12:08', 'tool': 'read_file', 'path': 'C:\\\\USERS\\\\MOHAM\\\\APPDATA\\\\LOCAL\\\\TEMP\\\\AGENTGATE-EVAL-ZL4J_BIE\\\\WORKSPACE\\\\NOTES.TXT', 'outcome': 'read'}] audit=['allow']"
     },
     {
       "id": "C01",
@@ -951,7 +951,7 @@
         "tool": false,
         "audit": false
       },
-      "note": "ran=[{'time': '2026-11-09T22:29:53', 'tool': 'read_file', 'path': 'C:\\\\Users\\\\Moham\\\\AppData\\\\Local\\\\Temp\\\\agentgate-eval-p4ym7q5l\\\\workspace\\\\hard_secret.txt', 'outcome': 'read'}] audit=[('allow', 'read-workspace')] | precondition: someone with write access put the link in the workspace"
+      "note": "ran=[{'time': '2026-11-10T05:12:08', 'tool': 'read_file', 'path': 'C:\\\\Users\\\\Moham\\\\AppData\\\\Local\\\\Temp\\\\agentgate-eval-zl4j_bie\\\\workspace\\\\hard_secret.txt', 'outcome': 'read'}] audit=[('allow', 'read-workspace')] | precondition: someone with write access put the link in the workspace"
     },
     {
       "id": "A10",
